@@ -1,0 +1,45 @@
+# Arduino / PlatformIO / ESP-IDF Build Artifacts
+build/
+.pio/
+*.bin
+*.hex
+*.elf
+*.map
+*.o
+*.d
+*.a
+*.tmp
+*.bak
+sketch/
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+cmake-build-*/
+
+# Operating System Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Node & Package Manager (if any scripts used)
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# AI Assistant & IDE State
+.gemini/
+scratch/
+*.swp
+*~

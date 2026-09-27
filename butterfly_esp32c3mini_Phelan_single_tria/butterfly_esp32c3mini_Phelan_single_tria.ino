@@ -1,0 +1,1217 @@
+#include <Arduino.h>
+#include <esp_task_wdt.h>
+#if __has_include(<esp_arduino_version.h>)
+#include <esp_arduino_version.h>
+#endif
+#include <ESP32Servo.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+
+enum class Protocol { DETECT, CRSF, SBUS };
+
+namespace Config {
+constexpr uint8_t RX_PIN = 3;
+constexpr uint8_t SERVO_L_PIN = 5;
+constexpr uint8_t SERVO_R_PIN = 6;
+constexpr uint8_t LED_PIN = 8;
+
+constexpr int SERVO_HZ = 300;
+constexpr int SERVO_MIN_ANGLE = 20;
+constexpr int SERVO_MAX_ANGLE = 160;
+constexpr int SERVO_EMA_ALPHA_SHIFT = 1;
+constexpr bool REVERSE_SERVO_L = false;
+constexpr bool REVERSE_SERVO_R = false;
+
+constexpr uint32_t CRSF_BAUD = 420000;
+constexpr uint32_t SBUS_BAUD = 100000;
+constexpr size_t RX_BUFFER_SIZE = 512;
+
+constexpr unsigned long RX_TIMEOUT_MS = 200;
+constexpr unsigned long RX_BYTE_TIMEOUT_MS = 5;
+constexpr uint32_t WDT_TIMEOUT_SEC = 3;
+constexpr unsigned long PROTO_LOCK_TIMEOUT_MS = 3000;
+constexpr unsigned long PROTO_SWITCH_TIMEOUT_MS = 1500;
+constexpr uint8_t CONN_LOST_THRESHOLD = 5;
+constexpr unsigned long STICK_HOLD_MS = 2000;
+constexpr unsigned long RX_HARD_FAILSAFE_MS = 5000;
+
+constexpr int THROTTLE_IDLE_MAX = 1050;
+constexpr bool USE_AUTO_DETECT = true;
+constexpr Protocol FIXED_PROTOCOL = Protocol::CRSF;
+
+constexpr unsigned long LOOP_DT_US = 3333;
+constexpr int FLAP_AMP = 65;
+constexpr uint32_t FLAP_SPEED_MIN = 157286;
+constexpr uint32_t FLAP_SPEED_MAX = 262144;
+constexpr int PERCH_MULT = 31;
+constexpr int PERCH_BASE_UP_ANGLE = 30;
+constexpr int FAILSAFE_DIHEDRAL = 15;
+constexpr int GLIDE_SERVO_SPEED_DPS = 1570;
+
+constexpr int16_t PERCH_ENTER_ELEV = 1300;
+constexpr int16_t PERCH_EXIT_ELEV = 1700;
+constexpr int16_t STICK_DEADBAND = 10;
+constexpr int16_t ARM_YAW_HIGH = 1900;
+constexpr int16_t ARM_YAW_LOW = 1100;
+
+constexpr int16_t RX_MIN_MICROS = 800;
+constexpr int16_t RX_MAX_MICROS = 2200;
+constexpr int32_t SBUS_RAW_MIN = 172;
+constexpr int32_t SBUS_RAW_MAX = 1811;
+constexpr int32_t CRSF_RAW_MIN = 172;
+constexpr int32_t CRSF_RAW_MAX = 1811;
+constexpr uint8_t CRSF_MAX_PAYLOAD_LEN = 62;
+constexpr uint8_t MAX_LOST_FRAMES = 255;
+
+constexpr int16_t CH_CENTER = 1500;
+constexpr int16_t CH_MIN = 1000;
+constexpr int16_t CH_MAX = 2000;
+
+constexpr int EMA_ALPHA_SHIFT = 3;
+
+constexpr uint8_t CH_STEERING = 0;
+constexpr uint8_t CH_ELEVATOR = 1;
+constexpr uint8_t CH_THROTTLE = 2;
+constexpr uint8_t CH_YAW = 3;
+constexpr uint8_t CH_KILL_SWITCH = 4;
+constexpr int16_t KILL_SWITCH_THRESHOLD = 1700;
+
+constexpr int PERCH_HEADROOM_DEG = 15;
+
+static_assert(CH_STEERING < 16, "CH_STEERING out of range");
+static_assert(CH_ELEVATOR < 16, "CH_ELEVATOR out of range");
+static_assert(CH_THROTTLE < 16, "CH_THROTTLE out of range");
+static_assert(CH_YAW < 16, "CH_YAW out of range");
+static_assert(CH_KILL_SWITCH < 16, "CH_KILL_SWITCH out of range");
+
+inline int mapTrim15(int x) {
+  int d = x - CH_CENTER;
+  if (abs(d) <= STICK_DEADBAND)
+    return 0;
+  int s = (d > 0) ? (d - STICK_DEADBAND) : (d + STICK_DEADBAND);
+  return constrain(s / 30, -15, 15);
+}
+
+}
+
+#define LOG_LEVEL_DEBUG 3
+#define LOG_LEVEL_INFO 2
+#define LOG_LEVEL_WARN 1
+#define LOG_LEVEL_ERROR 0
+
+#define CURRENT_LOG_LEVEL LOG_LEVEL_WARN
+
+SemaphoreHandle_t logMutex = NULL;
+
+#define SAFE_LOG(level, fmt, ...)                                              \
+  do {                                                                         \
+    if (logMutex)                                                              \
+      xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);                        \
+    if (Serial.availableForWrite() >= 64) {                                    \
+      Serial.print(level);                                                     \
+      Serial.printf(fmt, ##__VA_ARGS__);                                       \
+      Serial.println();                                                        \
+    }                                                                          \
+    if (logMutex)                                                              \
+      xSemaphoreGiveRecursive(logMutex);                                       \
+  } while (0)
+
+#if CURRENT_LOG_LEVEL >= LOG_LEVEL_DEBUG
+#define LOG_DEBUG(...) SAFE_LOG("[DEBUG] ", ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(...)                                                         \
+  do {                                                                         \
+  } while (0)
+#endif
+
+#if CURRENT_LOG_LEVEL >= LOG_LEVEL_INFO
+#define LOG_INFO(...) SAFE_LOG("[INFO] ", ##__VA_ARGS__)
+#else
+#define LOG_INFO(...)                                                          \
+  do {                                                                         \
+  } while (0)
+#endif
+
+#if CURRENT_LOG_LEVEL >= LOG_LEVEL_WARN
+#define LOG_WARN(...) SAFE_LOG("[WARN] ", ##__VA_ARGS__)
+#else
+#define LOG_WARN(...)                                                          \
+  do {                                                                         \
+  } while (0)
+#endif
+
+#if CURRENT_LOG_LEVEL >= LOG_LEVEL_ERROR
+#define LOG_ERROR(...) SAFE_LOG("[ERROR] ", ##__VA_ARGS__)
+#else
+#define LOG_ERROR(...)                                                         \
+  do {                                                                         \
+  } while (0)
+#endif
+
+namespace ServoSystem {
+
+struct Control {
+  Servo left;
+  Servo right;
+
+  static constexpr int centerAngle = 90;
+  int lastPosL = centerAngle;
+  int lastPosR = centerAngle;
+  int32_t filteredL = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
+  int32_t filteredR = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
+  bool isAttached = false;
+};
+
+Control state;
+
+void attachAll() {
+  if (!state.isAttached) {
+    state.left.setPeriodHertz(Config::SERVO_HZ);
+    state.right.setPeriodHertz(Config::SERVO_HZ);
+    state.left.attach(Config::SERVO_L_PIN, 500, 2500);
+    state.right.attach(Config::SERVO_R_PIN, 500, 2500);
+    int outL =
+        Config::REVERSE_SERVO_L ? (180 - state.lastPosL) : state.lastPosL;
+    int outR =
+        Config::REVERSE_SERVO_R ? (180 - state.lastPosR) : state.lastPosR;
+    state.left.write(outL);
+    state.right.write(outR);
+    state.filteredL = (int32_t)state.lastPosL << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.filteredR = (int32_t)state.lastPosR << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.isAttached = true;
+  }
+}
+
+void detachAll() {
+  if (state.isAttached) {
+    state.left.detach();
+    state.right.detach();
+    state.isAttached = false;
+  }
+}
+
+void update(int targetL, int targetR, bool bypassFilter = false) {
+  if (!state.isAttached)
+    return;
+  targetL =
+      constrain(targetL, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
+  targetR =
+      constrain(targetR, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
+
+  if (bypassFilter) {
+    state.filteredL = (int32_t)targetL << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.filteredR = (int32_t)targetR << Config::SERVO_EMA_ALPHA_SHIFT;
+  } else {
+    state.filteredL +=
+        targetL - (state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT);
+    state.filteredR +=
+        targetR - (state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT);
+  }
+
+  targetL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
+  targetR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
+
+  if (abs(targetL - state.lastPosL) >= 2) {
+    int outL = Config::REVERSE_SERVO_L ? (180 - targetL) : targetL;
+    state.left.write(outL);
+    state.lastPosL = targetL;
+  }
+  if (abs(targetR - state.lastPosR) >= 2) {
+    int outR = Config::REVERSE_SERVO_R ? (180 - targetR) : targetR;
+    state.right.write(outR);
+    state.lastPosR = targetR;
+  }
+}
+
+}
+
+enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
+
+namespace Flight {
+
+struct State {
+  FlightMode mode = FlightMode::INIT;
+
+  uint16_t phase = 0;
+  float currentOffset = 0.0f;
+
+  bool isPerching = false;
+  int perchAngleLevel = Config::CH_MIN;
+  bool phaseNeedsResync = true;
+  bool isFlapUp = true;
+  unsigned long failsafeEnterMs = 0;
+
+  bool wasFlapping = false;
+  bool wasPerching = false;
+  bool isFlapping = false;
+
+  bool isArmed = false;
+  unsigned long armStartTime = 0;
+  unsigned long disarmStartTime = 0;
+};
+
+State state;
+
+static const int16_t tri_LUT[256] = {
+    0,     16,   31,   47,   63,   78,   94,   109,  125,  141,  156,  172,
+    188,   203,  219,  234,  250,  266,  281,  297,  313,  328,  344,  359,
+    375,   391,  406,  422,  438,  453,  469,  484,  500,  516,  531,  547,
+    563,   578,  594,  609,  625,  641,  656,  672,  688,  703,  719,  734,
+    750,   766,  781,  797,  813,  828,  844,  859,  875,  891,  906,  922,
+    938,   953,  969,  984,  1000, 984,  969,  953,  938,  922,  906,  891,
+    875,   859,  844,  828,  813,  797,  781,  766,  750,  734,  719,  703,
+    688,   672,  656,  641,  625,  609,  594,  578,  563,  547,  531,  516,
+    500,   484,  469,  453,  438,  422,  406,  391,  375,  359,  344,  328,
+    313,   297,  281,  266,  250,  234,  219,  203,  188,  172,  156,  141,
+    125,   109,  94,   78,   63,   47,   31,   16,   0,    -16,  -31,  -47,
+    -63,   -78,  -94,  -109, -125, -141, -156, -172, -188, -203, -219, -234,
+    -250,  -266, -281, -297, -313, -328, -344, -359, -375, -391, -406, -422,
+    -438,  -453, -469, -484, -500, -516, -531, -547, -563, -578, -594, -609,
+    -625,  -641, -656, -672, -688, -703, -719, -734, -750, -766, -781, -797,
+    -813,  -828, -844, -859, -875, -891, -906, -922, -938, -953, -969, -984,
+    -1000, -984, -969, -953, -938, -922, -906, -891, -875, -859, -844, -828,
+    -813,  -797, -781, -766, -750, -734, -719, -703, -688, -672, -656, -641,
+    -625,  -609, -594, -578, -563, -547, -531, -516, -500, -484, -469, -453,
+    -438,  -422, -406, -391, -375, -359, -344, -328, -313, -297, -281, -266,
+    -250,  -234, -219, -203, -188, -172, -156, -141, -125, -109, -94,  -78,
+    -63,   -47,  -31,  -16};
+
+static const uint16_t atri_LUT[256] = {
+    0,     64,    128,   193,   257,   321,   386,   450,   514,   579,   643,
+    707,   772,   836,   900,   965,   1029,  1093,  1158,  1222,  1286,  1351,
+    1415,  1479,  1543,  1608,  1672,  1736,  1801,  1865,  1929,  1994,  2058,
+    2122,  2187,  2251,  2315,  2380,  2444,  2508,  2572,  2637,  2701,  2765,
+    2830,  2894,  2958,  3023,  3087,  3151,  3216,  3280,  3344,  3409,  3473,
+    3537,  3601,  3666,  3730,  3794,  3859,  3923,  3987,  4052,  4116,  4180,
+    4245,  4309,  4373,  4437,  4502,  4566,  4630,  4695,  4759,  4823,  4888,
+    4952,  5016,  5081,  5145,  5209,  5273,  5338,  5402,  5466,  5531,  5595,
+    5659,  5724,  5788,  5852,  5917,  5981,  6045,  6109,  6174,  6238,  6302,
+    6367,  6431,  6495,  6560,  6624,  6688,  6753,  6817,  6881,  6945,  7010,
+    7074,  7138,  7203,  7267,  7331,  7396,  7460,  7524,  7589,  7653,  7717,
+    7781,  7846,  7910,  7974,  8039,  8103,  8167,  8232,  8296,  8360,  8425,
+    8489,  8553,  8617,  8682,  8746,  8810,  8875,  8939,  9003,  9068,  9132,
+    9196,  9261,  9325,  9389,  9453,  9518,  9582,  9646,  9711,  9775,  9839,
+    9904,  9968,  10032, 10097, 10161, 10225, 10289, 10354, 10418, 10482, 10547,
+    10611, 10675, 10740, 10804, 10868, 10933, 10997, 11061, 11125, 11190, 11254,
+    11318, 11383, 11447, 11511, 11576, 11640, 11704, 11769, 11833, 11897, 11961,
+    12026, 12090, 12154, 12219, 12283, 12347, 12412, 12476, 12540, 12605, 12669,
+    12733, 12797, 12862, 12926, 12990, 13055, 13119, 13183, 13248, 13312, 13376,
+    13441, 13505, 13569, 13633, 13698, 13762, 13826, 13891, 13955, 14019, 14084,
+    14148, 14212, 14277, 14341, 14405, 14469, 14534, 14598, 14662, 14727, 14791,
+    14855, 14920, 14984, 15048, 15113, 15177, 15241, 15305, 15370, 15434, 15498,
+    15563, 15627, 15691, 15756, 15820, 15884, 15949, 16013, 16077, 16141, 16206,
+    16270, 16334, 16384};
+
+void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
+  if (state.phaseNeedsResync) {
+    int32_t ratioScaled =
+        (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+    ratioScaled = constrain(ratioScaled, -1000, 1000);
+
+    bool negate = (ratioScaled < 0);
+    int32_t abs_ratio = negate ? -ratioScaled : ratioScaled;
+
+    int index = (abs_ratio * 255) / 1000;
+    uint16_t approxPhase = atri_LUT[index];
+
+    int32_t signedPhase = negate ? -approxPhase : approxPhase;
+
+    if (!state.isFlapUp) {
+      signedPhase = 32768 - signedPhase;
+    }
+
+    state.phase = (uint16_t)signedPhase;
+    state.phaseNeedsResync = false;
+  }
+
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
+  uint32_t speed = Config::FLAP_SPEED_MIN +
+                   (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *
+                       (Config::FLAP_SPEED_MAX - Config::FLAP_SPEED_MIN) /
+                       (Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
+
+  if (dt_us > 0) {
+    uint32_t phaseDelta = ((uint64_t)speed * dt_us) / 1000000;
+    state.phase += phaseDelta;
+  }
+
+  float oldOffset = state.currentOffset;
+  state.currentOffset =
+      ((float)tri_LUT[state.phase >> 8] * dynamicAmp) / 1000.0f;
+
+  float delta = state.currentOffset - oldOffset;
+  if (delta > 0.1f) {
+    state.isFlapUp = true;
+  } else if (delta < -0.1f) {
+    state.isFlapUp = false;
+  }
+}
+
+void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
+  if (state.phaseNeedsResync) {
+    state.phaseNeedsResync = false;
+  }
+
+  float maxUpAngle =
+      Config::PERCH_BASE_UP_ANGLE +
+      ((perchAngleLevel - Config::CH_MIN) * Config::PERCH_MULT) / 1000.0f;
+  constexpr float maxOffset = Config::SERVO_MAX_ANGLE -
+                              ServoSystem::Control::centerAngle -
+                              Config::PERCH_HEADROOM_DEG;
+  float target = constrain(maxUpAngle, 0.0f, maxOffset);
+
+  if (dt_us > 0) {
+    float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
+    if (state.currentOffset < target) {
+      state.currentOffset += step;
+      if (state.currentOffset > target)
+        state.currentOffset = target;
+    } else if (state.currentOffset > target) {
+      state.currentOffset -= step;
+      if (state.currentOffset < target)
+        state.currentOffset = target;
+    }
+  } else {
+    state.currentOffset = target;
+  }
+}
+
+void updateCurrentOffsetGlide(unsigned long dt_us) {
+  if (state.currentOffset == 0)
+    return;
+
+  float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
+
+  if (state.currentOffset > 0) {
+    state.currentOffset -= step;
+    if (state.currentOffset < 0)
+      state.currentOffset = 0;
+  } else {
+    state.currentOffset += step;
+    if (state.currentOffset > 0)
+      state.currentOffset = 0;
+  }
+}
+
+void processFailsafe(unsigned long dt_us) {
+  state.isPerching = false;
+  state.armStartTime = 0;
+  state.disarmStartTime = 0;
+
+  unsigned long lostMs = millis() - state.failsafeEnterMs;
+  if (lostMs > Config::RX_HARD_FAILSAFE_MS) {
+    state.isArmed = false;
+  }
+
+  if (!state.isArmed) {
+    ServoSystem::detachAll();
+    return;
+  }
+
+  float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
+
+  if (state.currentOffset < Config::FAILSAFE_DIHEDRAL) {
+    state.currentOffset += step;
+    if (state.currentOffset > Config::FAILSAFE_DIHEDRAL) {
+      state.currentOffset = Config::FAILSAFE_DIHEDRAL;
+    }
+  } else if (state.currentOffset > Config::FAILSAFE_DIHEDRAL) {
+    state.currentOffset -= step;
+    if (state.currentOffset < Config::FAILSAFE_DIHEDRAL) {
+      state.currentOffset = Config::FAILSAFE_DIHEDRAL;
+    }
+  }
+
+  if (ServoSystem::state.isAttached) {
+    ServoSystem::update(
+        ServoSystem::state.centerAngle + (int)state.currentOffset,
+        ServoSystem::state.centerAngle - (int)state.currentOffset, false);
+  }
+  state.phaseNeedsResync = true;
+}
+}
+
+namespace Receiver {
+
+struct State {
+  Protocol currentProto = Protocol::DETECT;
+  Protocol trialProto = Protocol::CRSF;
+  unsigned long lastProtoSwitchTime = 0;
+  bool isLocked = false;
+  uint8_t validFramesCount = 0;
+
+  uint8_t crsfBuffer[65];
+  uint8_t crsfIndex = 0;
+  uint8_t crsfLength = 0;
+  uint16_t crsfCrcErrors = 0;
+  bool crsfFailSafe = false;
+
+  uint8_t sbusBuffer[25];
+  uint8_t sbusIndex = 0;
+  bool sbusFailSafe = false;
+  bool sbusFrameLost = false;
+  uint8_t sbusLostFrames = 0;
+
+  int16_t chMicros_cache[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
+                                1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
+  int16_t emaValues[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
+                           1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
+
+  bool hasFrame = false;
+  bool isConnected = false;
+  unsigned long lastTime = 0;
+  unsigned long lastByteTimeCrsf = 0;
+  unsigned long lastByteTimeSbus = 0;
+  unsigned long switchDelayStart = 0;
+  HardwareSerial *serialPort = nullptr;
+};
+
+State state;
+SemaphoreHandle_t rxMutex = NULL;
+static TaskHandle_t rxNotifyTaskHandle = NULL;
+
+void onUartData() {
+  if (rxNotifyTaskHandle) {
+    xTaskNotifyGive(rxNotifyTaskHandle);
+  }
+}
+
+static const uint8_t crsf_crc8_table[256] PROGMEM = {
+    0x00, 0xD5, 0x7F, 0xAA, 0xFE, 0x2B, 0x81, 0x54, 0x29, 0xFC, 0x56, 0x83,
+    0xD7, 0x02, 0xA8, 0x7D, 0x52, 0x87, 0x2D, 0xF8, 0xAC, 0x79, 0xD3, 0x06,
+    0x7B, 0xAE, 0x04, 0xD1, 0x85, 0x50, 0xFA, 0x2F, 0xA4, 0x71, 0xDB, 0x0E,
+    0x5A, 0x8F, 0x25, 0xF0, 0x8D, 0x58, 0xF2, 0x27, 0x73, 0xA6, 0x0C, 0xD9,
+    0xF6, 0x23, 0x89, 0x5C, 0x08, 0xDD, 0x77, 0xA2, 0xDF, 0x0A, 0xA0, 0x75,
+    0x21, 0xF4, 0x5E, 0x8B, 0x9D, 0x48, 0xE2, 0x37, 0x63, 0xB6, 0x1C, 0xC9,
+    0xB4, 0x61, 0xCB, 0x1E, 0x4A, 0x9F, 0x35, 0xE0, 0xCF, 0x1A, 0xB0, 0x65,
+    0x31, 0xE4, 0x4E, 0x9B, 0xE6, 0x33, 0x99, 0x4C, 0x18, 0xCD, 0x67, 0xB2,
+    0x39, 0xEC, 0x46, 0x93, 0xC7, 0x12, 0xB8, 0x6D, 0x10, 0xC5, 0x6F, 0xBA,
+    0xEE, 0x3B, 0x91, 0x44, 0x6B, 0xBE, 0x14, 0xC1, 0x95, 0x40, 0xEA, 0x3F,
+    0x42, 0x97, 0x3D, 0xE8, 0xBC, 0x69, 0xC3, 0x16, 0xEF, 0x3A, 0x90, 0x45,
+    0x11, 0xC4, 0x6E, 0xBB, 0xC6, 0x13, 0xB9, 0x6C, 0x38, 0xED, 0x47, 0x92,
+    0xBD, 0x68, 0xC2, 0x17, 0x43, 0x96, 0x3C, 0xE9, 0x94, 0x41, 0xEB, 0x3E,
+    0x6A, 0xBF, 0x15, 0xC0, 0x4B, 0x9E, 0x34, 0xE1, 0xB5, 0x60, 0xCA, 0x1F,
+    0x62, 0xB7, 0x1D, 0xC8, 0x9C, 0x49, 0xE3, 0x36, 0x19, 0xCC, 0x66, 0xB3,
+    0xE7, 0x32, 0x98, 0x4D, 0x30, 0xE5, 0x4F, 0x9A, 0xCE, 0x1B, 0xB1, 0x64,
+    0x72, 0xA7, 0x0D, 0xD8, 0x8C, 0x59, 0xF3, 0x26, 0x5B, 0x8E, 0x24, 0xF1,
+    0xA5, 0x70, 0xDA, 0x0F, 0x20, 0xF5, 0x5F, 0x8A, 0xDE, 0x0B, 0xA1, 0x74,
+    0x09, 0xDC, 0x76, 0xA3, 0xF7, 0x22, 0x88, 0x5D, 0xD6, 0x03, 0xA9, 0x7C,
+    0x28, 0xFD, 0x57, 0x82, 0xFF, 0x2A, 0x80, 0x55, 0x01, 0xD4, 0x7E, 0xAB,
+    0x84, 0x51, 0xFB, 0x2E, 0x7A, 0xAF, 0x05, 0xD0, 0xAD, 0x78, 0xD2, 0x07,
+    0x53, 0x86, 0x2C, 0xF9};
+
+uint8_t crsf_crc8(uint8_t *ptr, uint8_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc = pgm_read_byte(&crsf_crc8_table[crc ^ ptr[i]]);
+  }
+  return crc;
+}
+
+bool isValidSbusFooter(uint8_t footer) { return footer == 0x00; }
+
+uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
+                             uint8_t payloadLen) {
+  uint16_t bitOffset = chIndex * 11;
+  uint8_t byteOffset = bitOffset / 8;
+  uint8_t bitShift = bitOffset % 8;
+  uint32_t val = payload[byteOffset];
+  if (byteOffset + 1 < payloadLen) {
+    val |= (uint32_t)payload[byteOffset + 1] << 8;
+  }
+  if (byteOffset + 2 < payloadLen) {
+    val |= (uint32_t)payload[byteOffset + 2] << 16;
+  }
+  return (val >> bitShift) & 0x07FF;
+}
+
+void syncFilterCache();
+
+void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  state.crsfFailSafe = false;
+  bool firstFrame = !state.hasFrame;
+  for (uint8_t i = 0; i < 16; i++) {
+    uint8_t bitOffset = i * 11;
+    uint8_t byteOffset = bitOffset / 8;
+    if (byteOffset + 1 >= payload_len)
+      break;
+    uint16_t chRaw = extract11BitChannel(payload, i, payload_len);
+    int32_t mappedRaw =
+        Config::CH_MIN + ((int32_t)(chRaw - Config::CRSF_RAW_MIN) * 1000) /
+                             (Config::CRSF_RAW_MAX - Config::CRSF_RAW_MIN);
+    state.chMicros_cache[i] = (int16_t)constrain(
+        mappedRaw, Config::RX_MIN_MICROS, Config::RX_MAX_MICROS);
+  }
+  if (firstFrame)
+    syncFilterCache();
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+}
+
+void parseSbusChannels() {
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  bool firstFrame = !state.hasFrame;
+  for (uint8_t i = 0; i < 16; i++) {
+    uint16_t chRaw = extract11BitChannel(&state.sbusBuffer[1], i, 22);
+    int32_t mappedRaw =
+        Config::CH_MIN + ((int32_t)(chRaw - Config::SBUS_RAW_MIN) * 1000) /
+                             (Config::SBUS_RAW_MAX - Config::SBUS_RAW_MIN);
+    state.chMicros_cache[i] = (int16_t)constrain(
+        mappedRaw, Config::RX_MIN_MICROS, Config::RX_MAX_MICROS);
+  }
+  uint8_t flags = state.sbusBuffer[23];
+  state.sbusFrameLost = (flags & 0x04) != 0;
+  state.sbusFailSafe = (flags & 0x08) != 0;
+  if (state.sbusFrameLost) {
+    if (state.sbusLostFrames < Config::MAX_LOST_FRAMES)
+      state.sbusLostFrames++;
+  } else {
+    state.sbusLostFrames = 0;
+  }
+  if (firstFrame)
+    syncFilterCache();
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+}
+
+void resetParsers() {
+  state.crsfIndex = 0;
+  state.crsfLength = 0;
+  state.sbusIndex = 0;
+  state.lastByteTimeCrsf = 0;
+  state.lastByteTimeSbus = 0;
+  state.hasFrame = false;
+  state.validFramesCount = 0;
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  state.crsfFailSafe = false;
+  state.sbusFailSafe = false;
+  state.sbusFrameLost = false;
+  state.sbusLostFrames = 0;
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+}
+
+void syncFilterCache() {
+  for (uint8_t i = 0; i < 16; i++) {
+    state.emaValues[i] = state.chMicros_cache[i];
+  }
+}
+
+void updateFilters() {
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
+    if (diff != 0) {
+      state.emaValues[ch] += (diff >> Config::EMA_ALPHA_SHIFT);
+      if ((diff >> Config::EMA_ALPHA_SHIFT) == 0) {
+        state.emaValues[ch] += (diff > 0) ? 1 : -1;
+      }
+    }
+  }
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+}
+
+int16_t getFiltered(byte ch) {
+  if (ch >= 16)
+    return Config::CH_CENTER;
+  int16_t val;
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  val = state.emaValues[ch];
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+  return val;
+}
+
+bool readCrsf() {
+  if (!state.serialPort)
+    return false;
+  bool gotFrame = false;
+  unsigned long now = millis();
+  if (state.crsfIndex > 0 &&
+      (now - state.lastByteTimeCrsf > Config::RX_BYTE_TIMEOUT_MS))
+    state.crsfIndex = 0;
+
+  bool readAny = false;
+  for (int i = 0; i < 256 && state.serialPort->available(); i++) {
+    uint8_t c = state.serialPort->read();
+    readAny = true;
+    if (state.crsfIndex == 0 && c != 0xC8)
+      continue;
+    state.crsfBuffer[state.crsfIndex++] = c;
+    if (state.crsfIndex >= sizeof(state.crsfBuffer)) {
+      state.crsfIndex = 0;
+      continue;
+    }
+    if (state.crsfIndex == 2) {
+      state.crsfLength = c;
+      if (state.crsfLength > Config::CRSF_MAX_PAYLOAD_LEN ||
+          state.crsfLength < 2)
+        state.crsfIndex = 0;
+    }
+    if (state.crsfIndex == 3) {
+      uint8_t type = c;
+      if (!((type == 0x16 && state.crsfLength == 24) || type == 0x14)) {
+        state.crsfIndex = 0;
+        if (c == 0xC8) {
+          state.crsfBuffer[0] = c;
+          state.crsfIndex = 1;
+        }
+        continue;
+      }
+    }
+    if (state.crsfIndex > 2 && state.crsfIndex == state.crsfLength + 2) {
+      uint8_t crc = crsf_crc8(&state.crsfBuffer[2], state.crsfLength - 1);
+      if (crc == state.crsfBuffer[state.crsfIndex - 1]) {
+        if (state.crsfBuffer[2] == 0x16 && state.crsfLength == 24) {
+          parseCrsfChannels(&state.crsfBuffer[3], state.crsfLength - 2);
+          gotFrame = true;
+        } else if (state.crsfBuffer[2] == 0x14 && state.crsfLength >= 6) {
+          uint8_t lq = state.crsfBuffer[5];
+          bool failsafe = (lq == 0);
+          if (rxMutex)
+            xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+          state.crsfFailSafe = failsafe;
+          if (rxMutex)
+            xSemaphoreGiveRecursive(rxMutex);
+        }
+      } else {
+        state.crsfCrcErrors++;
+      }
+      state.crsfIndex = 0;
+    }
+  }
+  if (readAny)
+    state.lastByteTimeCrsf = millis();
+  return gotFrame;
+}
+
+bool readSbus() {
+  if (!state.serialPort)
+    return false;
+  bool gotFrame = false;
+  unsigned long now = millis();
+  if (state.sbusIndex > 0 &&
+      (now - state.lastByteTimeSbus > Config::RX_BYTE_TIMEOUT_MS))
+    state.sbusIndex = 0;
+
+  bool readAny = false;
+  for (int i = 0; i < 256 && state.serialPort->available(); i++) {
+    uint8_t c = state.serialPort->read();
+    readAny = true;
+    if (state.sbusIndex == 0 && c != 0x0F)
+      continue;
+    state.sbusBuffer[state.sbusIndex++] = c;
+    if (state.sbusIndex >= 25) {
+      state.sbusIndex = 0;
+      if (!isValidSbusFooter(state.sbusBuffer[24]))
+        continue;
+      parseSbusChannels();
+      gotFrame = true;
+    }
+  }
+  if (readAny)
+    state.lastByteTimeSbus = millis();
+  return gotFrame;
+}
+
+void switchProtocol() {
+  if (!state.serialPort)
+    return;
+  state.trialProto =
+      (state.trialProto == Protocol::CRSF) ? Protocol::SBUS : Protocol::CRSF;
+
+  while (state.serialPort->available())
+    state.serialPort->read();
+
+  state.serialPort->flush();
+  state.serialPort->onReceive(NULL);
+  state.serialPort->end();
+
+  state.switchDelayStart = millis();
+  if (state.switchDelayStart == 0)
+    state.switchDelayStart = 1;
+}
+
+void detectProtocol() {
+  if (!state.serialPort)
+    return;
+  bool shouldUnlock = false;
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  shouldUnlock = state.isLocked && state.hasFrame &&
+                 (millis() - state.lastTime > Config::PROTO_LOCK_TIMEOUT_MS);
+  if (shouldUnlock) {
+    state.isLocked = false;
+    state.currentProto = Protocol::DETECT;
+    state.hasFrame = false;
+  }
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+
+  if (shouldUnlock) {
+    resetParsers();
+    state.lastProtoSwitchTime = millis();
+    LOG_WARN("Protocol unlocked - no frames for 3s, re-detecting...");
+  }
+
+  if (state.switchDelayStart != 0) {
+    if (millis() - state.switchDelayStart >= 5) {
+      state.switchDelayStart = 0;
+      resetParsers();
+      state.validFramesCount = 0;
+
+      state.serialPort->setRxBufferSize(Config::RX_BUFFER_SIZE);
+
+      if (state.trialProto == Protocol::CRSF) {
+        state.serialPort->begin(Config::CRSF_BAUD, SERIAL_8N1, Config::RX_PIN,
+                                -1, false);
+      } else {
+        state.serialPort->begin(Config::SBUS_BAUD, SERIAL_8E2, Config::RX_PIN,
+                                -1, true);
+      }
+      state.serialPort->onReceive(onUartData);
+      state.lastProtoSwitchTime = millis();
+      LOG_INFO("Switched protocol.");
+    }
+    return;
+  }
+
+  if (!state.isLocked) {
+    if (millis() - state.lastProtoSwitchTime >
+        Config::PROTO_SWITCH_TIMEOUT_MS) {
+      switchProtocol();
+    }
+  }
+}
+
+void lockReceiver() {
+  state.validFramesCount++;
+  if (state.validFramesCount >= 3) {
+    if (rxMutex)
+      xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+    state.isLocked = true;
+    state.currentProto = state.trialProto;
+    if (rxMutex)
+      xSemaphoreGiveRecursive(rxMutex);
+    LOG_INFO("Locked protocol: %s",
+             state.currentProto == Protocol::CRSF ? "CRSF" : "SBUS");
+  }
+}
+
+void handleAutoDetect() {
+  if (Config::USE_AUTO_DETECT)
+    detectProtocol();
+
+  if (state.switchDelayStart != 0)
+    return;
+
+  bool frameReceived = false;
+  if (state.trialProto == Protocol::CRSF)
+    frameReceived = readCrsf();
+  else
+    frameReceived = readSbus();
+
+  if (frameReceived) {
+    if (rxMutex)
+      xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+    state.hasFrame = true;
+    state.lastTime = millis();
+    if (rxMutex)
+      xSemaphoreGiveRecursive(rxMutex);
+    if (Config::USE_AUTO_DETECT && !state.isLocked) {
+      lockReceiver();
+    }
+  }
+}
+
+void init(HardwareSerial *serial, TaskHandle_t taskToNotify) {
+  if (rxMutex == NULL) {
+    rxMutex = xSemaphoreCreateRecursiveMutex();
+    configASSERT(rxMutex != NULL);
+  }
+  state.serialPort = serial;
+  rxNotifyTaskHandle = taskToNotify;
+  if (!state.serialPort)
+    return;
+  state.serialPort->setRxBufferSize(Config::RX_BUFFER_SIZE);
+
+  if (Config::USE_AUTO_DETECT) {
+    state.serialPort->begin(Config::CRSF_BAUD, SERIAL_8N1, Config::RX_PIN, -1,
+                            false);
+    state.lastProtoSwitchTime = millis();
+  } else {
+    state.trialProto = Config::FIXED_PROTOCOL;
+    state.currentProto = Config::FIXED_PROTOCOL;
+    state.isLocked = true;
+    if (state.trialProto == Protocol::CRSF) {
+      state.serialPort->begin(Config::CRSF_BAUD, SERIAL_8N1, Config::RX_PIN, -1,
+                              false);
+    } else {
+      state.serialPort->begin(Config::SBUS_BAUD, SERIAL_8E2, Config::RX_PIN, -1,
+                              true);
+    }
+  }
+  state.serialPort->onReceive(onUartData);
+}
+
+}
+
+HardwareSerial rxSerial(1);
+TaskHandle_t rxTaskHandle = NULL;
+
+void handleFailsafeMode(unsigned long dt_us, bool connected,
+                        unsigned long currentMillis) {
+  if (connected) {
+    Flight::state.failsafeEnterMs = 0;
+    Flight::state.mode =
+        Flight::state.isArmed ? FlightMode::CONNECTED : FlightMode::INIT;
+    return;
+  }
+  if (Flight::state.failsafeEnterMs == 0) {
+    Flight::state.failsafeEnterMs = currentMillis;
+    if (Flight::state.failsafeEnterMs == 0)
+      Flight::state.failsafeEnterMs = 1;
+  }
+  Flight::processFailsafe(dt_us);
+}
+
+void handleInitMode(unsigned long dt_us, bool connected,
+                    unsigned long currentMillis, int throttle, int yaw) {
+  if (!connected) {
+    Flight::state.mode = FlightMode::FAILSAFE;
+    Flight::state.failsafeEnterMs = currentMillis;
+    if (Flight::state.failsafeEnterMs == 0)
+      Flight::state.failsafeEnterMs = 1;
+    return;
+  }
+
+  if (throttle < Config::THROTTLE_IDLE_MAX && yaw > Config::ARM_YAW_HIGH) {
+    if (Flight::state.armStartTime == 0)
+      Flight::state.armStartTime = currentMillis;
+    else if (currentMillis - Flight::state.armStartTime >=
+             Config::STICK_HOLD_MS) {
+      Flight::state.isArmed = true;
+      Flight::state.armStartTime = 0;
+      Flight::state.phaseNeedsResync = true;
+      Flight::state.mode = FlightMode::CONNECTED;
+      Flight::state.disarmStartTime = 0;
+      Flight::state.isPerching = false;
+      Flight::state.perchAngleLevel = Config::CH_MIN;
+      ServoSystem::state.lastPosL = ServoSystem::Control::centerAngle;
+      ServoSystem::state.lastPosR = ServoSystem::Control::centerAngle;
+      ServoSystem::attachAll();
+    }
+  } else {
+    Flight::state.armStartTime = 0;
+  }
+
+  Flight::state.failsafeEnterMs = 0;
+  Flight::updateCurrentOffsetGlide(dt_us);
+  if (ServoSystem::state.isAttached) {
+    ServoSystem::update(
+        ServoSystem::state.centerAngle + (int)Flight::state.currentOffset,
+        ServoSystem::state.centerAngle - (int)Flight::state.currentOffset,
+        false);
+  }
+}
+
+void handleDisarming(unsigned long currentMillis, int throttle, int yaw) {
+  if (throttle < Config::THROTTLE_IDLE_MAX && yaw < Config::ARM_YAW_LOW) {
+    if (Flight::state.disarmStartTime == 0)
+      Flight::state.disarmStartTime = currentMillis;
+    else if (currentMillis - Flight::state.disarmStartTime >=
+             Config::STICK_HOLD_MS) {
+      Flight::state.isArmed = false;
+      ServoSystem::detachAll();
+      Flight::state.mode = FlightMode::INIT;
+      Flight::state.armStartTime = 0;
+      Flight::state.disarmStartTime = 0;
+    }
+  } else {
+    Flight::state.disarmStartTime = 0;
+  }
+}
+
+void handleModeTransition(int elevator, int throttle) {
+  Flight::state.isFlapping = (throttle >= Config::THROTTLE_IDLE_MAX);
+
+  if (Flight::state.isFlapping && !Flight::state.wasFlapping) {
+    Flight::state.phaseNeedsResync = true;
+  }
+  Flight::state.wasFlapping = Flight::state.isFlapping;
+
+  if (throttle < Config::THROTTLE_IDLE_MAX) {
+    if (elevator < Config::PERCH_ENTER_ELEV)
+      Flight::state.isPerching = true;
+    else if (elevator > Config::PERCH_EXIT_ELEV) {
+      Flight::state.isPerching = false;
+      Flight::state.perchAngleLevel = Config::CH_MIN;
+    }
+    Flight::state.mode =
+        Flight::state.isPerching ? FlightMode::PERCHING : FlightMode::CONNECTED;
+  } else {
+    Flight::state.isPerching = false;
+    Flight::state.perchAngleLevel = Config::CH_MIN;
+    Flight::state.mode = FlightMode::CONNECTED;
+  }
+
+  if (Flight::state.mode == FlightMode::PERCHING &&
+      !Flight::state.wasPerching) {
+    Flight::state.phaseNeedsResync = true;
+  }
+  Flight::state.wasPerching = (Flight::state.mode == FlightMode::PERCHING);
+}
+
+void computeServoTargets(unsigned long dt_us, int steering, int elevator,
+                         int throttle) {
+  int steerValue = (abs(steering - Config::CH_CENTER) > Config::STICK_DEADBAND)
+                       ? Config::mapTrim15(steering)
+                       : 0;
+  int elevOffset = 0;
+
+  if (Flight::state.mode != FlightMode::PERCHING) {
+    elevOffset = (abs(elevator - Config::CH_CENTER) > Config::STICK_DEADBAND)
+                     ? Config::mapTrim15(elevator)
+                     : 0;
+  }
+
+  if (Flight::state.mode == FlightMode::PERCHING) {
+    int currentPull =
+        constrain(Config::CH_MIN + (Config::CH_CENTER - elevator) * 2,
+                  Config::CH_MIN, Config::CH_MAX);
+    Flight::state.perchAngleLevel = currentPull;
+    Flight::updateCurrentOffsetPerch(Flight::state.perchAngleLevel, dt_us);
+  } else {
+    if (throttle < Config::THROTTLE_IDLE_MAX)
+      Flight::updateCurrentOffsetGlide(dt_us);
+    else
+      Flight::updateCurrentOffsetTriangle(throttle, dt_us);
+  }
+
+  int offsetInt = (int)Flight::state.currentOffset;
+  ServoSystem::update(
+      ServoSystem::state.centerAngle + offsetInt + elevOffset + steerValue,
+      ServoSystem::state.centerAngle - offsetInt - elevOffset + steerValue,
+      Flight::state.isFlapping);
+}
+
+void handleConnectedMode(unsigned long dt_us, bool connected,
+                         unsigned long currentMillis, int steering,
+                         int elevator, int throttle, int yaw) {
+  if (!connected) {
+    Flight::state.mode = FlightMode::FAILSAFE;
+    Flight::state.failsafeEnterMs = currentMillis;
+    if (Flight::state.failsafeEnterMs == 0)
+      Flight::state.failsafeEnterMs = 1;
+    return;
+  }
+
+  handleDisarming(currentMillis, throttle, yaw);
+  if (Flight::state.mode == FlightMode::INIT)
+    return;
+
+  Flight::state.failsafeEnterMs = 0;
+  handleModeTransition(elevator, throttle);
+  computeServoTargets(dt_us, steering, elevator, throttle);
+}
+
+void processFlightLogic(unsigned long dt_us, int steering, int elevator,
+                        int throttle, int yaw, bool connected) {
+  unsigned long currentMillis = millis();
+
+  switch (Flight::state.mode) {
+  case FlightMode::FAILSAFE:
+    handleFailsafeMode(dt_us, connected, currentMillis);
+    break;
+  case FlightMode::INIT:
+    handleInitMode(dt_us, connected, currentMillis, throttle, yaw);
+    break;
+  case FlightMode::PERCHING:
+  case FlightMode::CONNECTED:
+    handleConnectedMode(dt_us, connected, currentMillis, steering, elevator,
+                        throttle, yaw);
+    break;
+  }
+}
+
+void setupWatchdog() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  esp_task_wdt_config_t wdt_cfg = {};
+  wdt_cfg.timeout_ms = Config::WDT_TIMEOUT_SEC * 1000;
+  wdt_cfg.idle_core_mask = 0;
+  wdt_cfg.trigger_panic = true;
+  esp_err_t err = esp_task_wdt_init(&wdt_cfg);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    LOG_ERROR("WDT Init failed");
+  }
+#else
+  esp_task_wdt_init(Config::WDT_TIMEOUT_SEC, false);
+#endif
+  esp_task_wdt_add(NULL);
+}
+
+void vReceiverTask(void *pvParameters) {
+  esp_task_wdt_add(NULL);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+    esp_task_wdt_reset();
+    Receiver::handleAutoDetect();
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  logMutex = xSemaphoreCreateRecursiveMutex();
+  Serial.printf("Reset reason: %d\n", esp_reset_reason());
+  setupWatchdog();
+
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+
+  pinMode(Config::LED_PIN, OUTPUT);
+  digitalWrite(Config::LED_PIN, HIGH);
+
+  xTaskCreate(vReceiverTask, "RX_Task", 8192, NULL, configMAX_PRIORITIES - 2,
+              &rxTaskHandle);
+
+  Receiver::init(&rxSerial, rxTaskHandle);
+
+  ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
+  ServoSystem::state.lastPosR = ServoSystem::state.centerAngle;
+
+  LOG_INFO("PHELAN BUTTERFLY 2IN1 TRIANGLE READY");
+}
+
+void loop() {
+  static bool snapshotConnected = false;
+  static Protocol snapProto = Protocol::DETECT;
+  static int16_t emaSnapshot[16] = {1500, 1500, 1500, 1500, 1500, 1500,
+                                    1500, 1500, 1500, 1500, 1500, 1500,
+                                    1500, 1500, 1500, 1500};
+
+  esp_task_wdt_reset();
+
+  unsigned long currentMillis = millis();
+
+  static unsigned long lastUpdateMicros = 0;
+  unsigned long nowUs = micros();
+  unsigned long elapsed = nowUs - lastUpdateMicros;
+  if (elapsed >= Config::LOOP_DT_US) {
+    unsigned long dt_us = elapsed;
+    if (lastUpdateMicros == 0 || dt_us == 0 || dt_us > 100000)
+      dt_us = Config::LOOP_DT_US;
+    lastUpdateMicros = nowUs;
+
+    Receiver::updateFilters();
+
+    if (Receiver::rxMutex) {
+      if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
+        bool protocolReady =
+            !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
+
+        bool rawConnected =
+            protocolReady && Receiver::state.hasFrame &&
+            (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
+        if (Receiver::state.currentProto == Protocol::SBUS &&
+            (Receiver::state.sbusFailSafe ||
+             Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
+          rawConnected = false;
+        }
+        if (Receiver::state.currentProto == Protocol::CRSF &&
+            Receiver::state.crsfFailSafe) {
+          rawConnected = false;
+        }
+        Receiver::state.isConnected = rawConnected;
+        snapshotConnected = rawConnected;
+        snapProto = Receiver::state.currentProto;
+        memcpy(emaSnapshot, Receiver::state.emaValues, sizeof(emaSnapshot));
+        xSemaphoreGiveRecursive(Receiver::rxMutex);
+      }
+    }
+
+    bool killActive =
+        emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
+    static uint8_t killDebounce = 0;
+    if (killActive) {
+      if (killDebounce < 10)
+        killDebounce++;
+    } else {
+      killDebounce = 0;
+    }
+
+    if (killDebounce >= 5) {
+      Flight::state.isArmed = false;
+      Flight::state.armStartTime = 0;
+      Flight::state.disarmStartTime = 0;
+      Flight::state.isPerching = false;
+      Flight::state.isFlapping = false;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
+      Flight::state.phaseNeedsResync = true;
+      Flight::state.mode = FlightMode::INIT;
+      Flight::state.failsafeEnterMs = 0;
+      ServoSystem::detachAll();
+    } else {
+      processFlightLogic(dt_us, emaSnapshot[Config::CH_STEERING],
+                         emaSnapshot[Config::CH_ELEVATOR],
+                         emaSnapshot[Config::CH_THROTTLE],
+                         emaSnapshot[Config::CH_YAW], snapshotConnected);
+    }
+  } else {
+    unsigned long remaining = Config::LOOP_DT_US - elapsed;
+    if (remaining > 1500) {
+      delayMicroseconds(remaining / 2);
+    }
+  }
+
+  if (!snapshotConnected) {
+    digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
+  } else {
+    digitalWrite(Config::LED_PIN,
+                 Flight::state.isArmed
+                     ? HIGH
+                     : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
+  }
+
+  static unsigned long lastLogTime = 0;
+  if (currentMillis - lastLogTime >= 1000) {
+    lastLogTime = currentMillis;
+    if (logMutex)
+      xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
+    if (Serial.availableForWrite() >= 64) {
+      if (snapshotConnected) {
+        Serial.print(Flight::state.isArmed ? F("[FLY] ") : F("[ARM?] "));
+        if (snapProto == Protocol::CRSF)
+          Serial.print(F("CRSF "));
+        else if (snapProto == Protocol::SBUS)
+          Serial.print(F("SBUS "));
+        else
+          Serial.print(F("DETC "));
+        Serial.print(F("CH3:"));
+        Serial.print(emaSnapshot[2]);
+        Serial.print(F(" Off:"));
+        Serial.print((int)Flight::state.currentOffset);
+        Serial.print(F(" SVO:"));
+        Serial.print(ServoSystem::state.isAttached ? F("OK") : F("DET"));
+        Serial.print(F(" LED:"));
+        Serial.println(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
+      } else {
+        Serial.println(F("[WARN] NO SIGNAL or DETECTING..."));
+      }
+    }
+    if (logMutex)
+      xSemaphoreGiveRecursive(logMutex);
+  }
+}
