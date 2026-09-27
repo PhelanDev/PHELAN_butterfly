@@ -9,10 +9,6 @@ void sendChannelsUDP(int16_t *channels) {
   if (!udpBridgeEnabled)
     return;
 
-  if (millis() - lastUdpSend < 20)
-    return;
-  lastUdpSend = millis();
-
   uint8_t buffer[32];
   for (int i = 0; i < 16; i++) {
     int16_t val = channels[i];

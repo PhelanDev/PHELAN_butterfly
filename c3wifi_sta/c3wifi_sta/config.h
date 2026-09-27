@@ -44,7 +44,6 @@ WiFiUDP udpBridge;
 IPAddress udpTargetIP(192, 168, 4, 2);
 uint16_t udpTargetPort = 14550;
 bool udpBridgeEnabled = false;
-unsigned long lastUdpSend = 0;
 
 namespace Config {
 constexpr uint8_t SERVO_L_PIN = 5;

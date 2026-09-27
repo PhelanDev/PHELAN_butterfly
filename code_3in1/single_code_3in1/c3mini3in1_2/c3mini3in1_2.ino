@@ -46,7 +46,6 @@ WiFiUDP udpBridge;
 IPAddress udpTargetIP(192, 168, 4, 2);
 uint16_t udpTargetPort = 14550;
 bool udpBridgeEnabled = false;
-unsigned long lastUdpSend = 0;
 
 namespace Config {
 constexpr uint8_t RX_PIN = 3;
@@ -1341,10 +1340,6 @@ void handleSerialBridge() {
 void sendChannelsUDP(int16_t *channels) {
   if (!udpBridgeEnabled)
     return;
-
-  if (millis() - lastUdpSend < 20)
-    return;
-  lastUdpSend = millis();
 
   uint8_t buffer[32];
   for (int i = 0; i < 16; i++) {
@@ -3084,8 +3079,6 @@ void loop() {
       snapProto = Protocol::WIFI;
     }
 
-    sendChannelsUDP(emaSnapshot);
-
     bool killActive =
         emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
     static uint8_t killDebounce = 0;
@@ -3153,6 +3146,12 @@ void loop() {
                  Flight::state.isArmed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
+  }
+
+  static unsigned long lastUdpSendTime = 0;
+  if (currentMillis - lastUdpSendTime >= 20) {
+    lastUdpSendTime = currentMillis;
+    sendChannelsUDP(emaSnapshot);
   }
 
   SysMonitor::checkSerialTimeSync();

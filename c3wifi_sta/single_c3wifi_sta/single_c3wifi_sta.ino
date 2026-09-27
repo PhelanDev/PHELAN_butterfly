@@ -43,7 +43,6 @@ WiFiUDP udpBridge;
 IPAddress udpTargetIP(192, 168, 4, 2);
 uint16_t udpTargetPort = 14550;
 bool udpBridgeEnabled = false;
-unsigned long lastUdpSend = 0;
 
 namespace Config {
 constexpr uint8_t SERVO_L_PIN = 5;
@@ -1975,10 +1974,6 @@ void sendChannelsUDP(int16_t *channels) {
   if (!udpBridgeEnabled)
     return;
 
-  if (millis() - lastUdpSend < 20)
-    return;
-  lastUdpSend = millis();
-
   uint8_t buffer[32];
   for (int i = 0; i < 16; i++) {
     int16_t val = channels[i];
@@ -2384,8 +2379,6 @@ void loop() {
       dt_us = Config::LOOP_DT_US;
     lastUpdateMicros = nowUs;
 
-    sendChannelsUDP(WebControl::webChannels);
-
     bool killActive =
         WebControl::webChannels[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
     static uint8_t killDebounce = 0;
@@ -2455,6 +2448,12 @@ void loop() {
                  Flight::state.isArmed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
+  }
+
+  static unsigned long lastUdpSendTime = 0;
+  if (currentMillis - lastUdpSendTime >= 20) {
+    lastUdpSendTime = currentMillis;
+    sendChannelsUDP(WebControl::webChannels);
   }
 
   SysMonitor::checkSerialTimeSync();

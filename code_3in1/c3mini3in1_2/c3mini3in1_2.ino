@@ -146,8 +146,6 @@ void loop() {
       snapProto = Protocol::WIFI;
     }
 
-    sendChannelsUDP(emaSnapshot);
-
     bool killActive =
         emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
     static uint8_t killDebounce = 0;
@@ -215,6 +213,12 @@ void loop() {
                  Flight::state.isArmed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
+  }
+
+  static unsigned long lastUdpSendTime = 0;
+  if (currentMillis - lastUdpSendTime >= 20) {
+    lastUdpSendTime = currentMillis;
+    sendChannelsUDP(emaSnapshot);
   }
 
   SysMonitor::checkSerialTimeSync();

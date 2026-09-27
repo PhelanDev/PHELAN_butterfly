@@ -100,8 +100,6 @@ void loop() {
       dt_us = Config::LOOP_DT_US;
     lastUpdateMicros = nowUs;
 
-    sendChannelsUDP(WebControl::webChannels);
-
     bool killActive =
         WebControl::webChannels[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
     static uint8_t killDebounce = 0;
@@ -171,6 +169,12 @@ void loop() {
                  Flight::state.isArmed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
+  }
+
+  static unsigned long lastUdpSendTime = 0;
+  if (currentMillis - lastUdpSendTime >= 20) {
+    lastUdpSendTime = currentMillis;
+    sendChannelsUDP(WebControl::webChannels);
   }
 
   SysMonitor::checkSerialTimeSync();
