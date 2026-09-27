@@ -1046,6 +1046,7 @@ function triggerFailsafeAlert() {
 
 function sendFlightPacket(isKill = false) {
   if (!App.ws || App.ws.readyState !== WebSocket.OPEN) return;
+  if (App.ws.bufferedAmount > 0 && !isKill) return;
 
   const buf = new ArrayBuffer(6);
   const view = new DataView(buf);
