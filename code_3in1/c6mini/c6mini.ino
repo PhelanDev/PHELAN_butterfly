@@ -22,6 +22,68 @@ void setupWatchdog() {
   esp_task_wdt_add(NULL);
 }
 
+#include <atomic>
+
+struct alignas(4) ControlSnapshot {
+  int16_t ch[4];
+  uint8_t flags;
+};
+
+static ControlSnapshot g_cmd_buffer[2];
+static std::atomic<uint8_t> g_cmd_index{0};
+
+inline void publishControlSnapshot(int16_t roll, int16_t pitch, int16_t throttle, int16_t yaw, uint8_t flags) {
+  uint8_t next = 1 - g_cmd_index.load(std::memory_order_relaxed);
+  g_cmd_buffer[next].ch[0] = roll;
+  g_cmd_buffer[next].ch[1] = pitch;
+  g_cmd_buffer[next].ch[2] = throttle;
+  g_cmd_buffer[next].ch[3] = yaw;
+  g_cmd_buffer[next].flags = flags;
+  g_cmd_index.store(next, std::memory_order_release);
+}
+
+inline ControlSnapshot readControlSnapshot() {
+  return g_cmd_buffer[g_cmd_index.load(std::memory_order_acquire)];
+}
+
+void flightCoreTask(void *pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(3);
+
+  for (;;) {
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+    ControlSnapshot cmd = readControlSnapshot();
+    bool isConnected = (cmd.flags & 0x01) != 0;
+    bool killActive = (cmd.flags & 0x02) != 0;
+
+    static uint8_t killDebounce = 0;
+    if (killActive) {
+      if (killDebounce < 10)
+        killDebounce++;
+    } else {
+      killDebounce = 0;
+    }
+
+    if (killDebounce >= 5) {
+      Flight::state.isArmed = false;
+      Flight::state.armStartTime = 0;
+      Flight::state.disarmStartTime = 0;
+      Flight::state.isPerching = false;
+      Flight::state.isFlapping = false;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
+      Flight::state.phaseNeedsResync = true;
+      Flight::state.mode = FlightMode::INIT;
+      Flight::state.failsafeEnterMs = 0;
+      ServoSystem::detachAll();
+    } else {
+      processFlightLogic(Config::LOOP_DT_US, cmd.ch[0], cmd.ch[1], cmd.ch[2],
+                         cmd.ch[3], isConnected);
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   SysMonitor::parseCompileTime();
@@ -72,6 +134,8 @@ void setup() {
 
   WebControl::init();
 
+  xTaskCreatePinnedToCore(flightCoreTask, "FlightCore", 4096, NULL, 5, NULL, 0);
+
   LOG_INFO("PHELAN BUTTERFLY 2IN1 TRIANGLE READY");
 }
 
@@ -88,103 +152,69 @@ void loop() {
 
   unsigned long currentMillis = millis();
 
-  static unsigned long lastUpdateMicros = 0;
-  unsigned long nowUs = micros();
-  unsigned long elapsed = nowUs - lastUpdateMicros;
-  if (elapsed >= Config::LOOP_DT_US) {
-    unsigned long dt_us = elapsed;
-    if (lastUpdateMicros == 0 || dt_us == 0 || dt_us > 100000)
-      dt_us = Config::LOOP_DT_US;
-    lastUpdateMicros = nowUs;
+  Receiver::updateFilters();
 
-    Receiver::updateFilters();
+  if (Receiver::rxMutex) {
+    if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
+      bool protocolReady =
+          !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
 
-    if (Receiver::rxMutex) {
-      if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
-        bool protocolReady =
-            !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
-
-        bool rawConnected =
-            protocolReady && Receiver::state.hasFrame &&
-            (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
-        if (Receiver::state.currentProto == Protocol::SBUS &&
-            (Receiver::state.sbusFailSafe ||
-             Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
-          rawConnected = false;
-        }
-        if (Receiver::state.currentProto == Protocol::CRSF &&
-            Receiver::state.crsfFailSafe) {
-          rawConnected = false;
-        }
-        Receiver::state.isConnected = rawConnected;
-        snapshotConnected = rawConnected;
-        snapProto = Receiver::state.currentProto;
-        memcpy(emaSnapshot, Receiver::state.emaValues, sizeof(emaSnapshot));
-        xSemaphoreGiveRecursive(Receiver::rxMutex);
+      bool rawConnected =
+          protocolReady && Receiver::state.hasFrame &&
+          (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
+      if (Receiver::state.currentProto == Protocol::SBUS &&
+          (Receiver::state.sbusFailSafe ||
+           Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
+        rawConnected = false;
       }
-    }
-
-    if (WebControl::webControlEnabled) {
-      memcpy(emaSnapshot, WebControl::webChannels, sizeof(emaSnapshot));
-      snapshotConnected = true;
-      snapProto = Protocol::WIFI;
-    }
-
-    bool killActive =
-        emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
-    static uint8_t killDebounce = 0;
-    if (killActive) {
-      if (killDebounce < 10)
-        killDebounce++;
-    } else {
-      killDebounce = 0;
-    }
-
-    if (killDebounce >= 5) {
-      Flight::state.isArmed = false;
-      Flight::state.armStartTime = 0;
-      Flight::state.disarmStartTime = 0;
-      Flight::state.isPerching = false;
-      Flight::state.isFlapping = false;
-      Flight::state.wasFlapping = false;
-      Flight::state.wasPerching = false;
-      Flight::state.phaseNeedsResync = true;
-      Flight::state.mode = FlightMode::INIT;
-      Flight::state.failsafeEnterMs = 0;
-      ServoSystem::detachAll();
-    } else {
-      processFlightLogic(dt_us, emaSnapshot[Config::CH_STEERING],
-                         emaSnapshot[Config::CH_ELEVATOR],
-                         emaSnapshot[Config::CH_THROTTLE],
-                         emaSnapshot[Config::CH_YAW], snapshotConnected);
-    }
-
-#if USE_OLED
-    if (telemMutex) {
-      if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(2))) {
-        char timeBuf[32];
-        SysMonitor::getFormattedTime(timeBuf, sizeof(timeBuf));
-        strcpy(sharedTelem.timeStr, timeBuf);
-        sharedTelem.uptimeSec = millis() / 1000;
-        sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-        sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-        sharedTelem.mode = Flight::state.mode;
-        sharedTelem.proto = snapProto;
-        sharedTelem.isConnected = snapshotConnected;
-        sharedTelem.isArmed = Flight::state.isArmed;
-        sharedTelem.leftServo = ServoSystem::state.lastPosL;
-        sharedTelem.rightServo = ServoSystem::state.lastPosR;
-        sharedTelem.offset = Flight::state.currentOffset;
-        xSemaphoreGive(telemMutex);
+      if (Receiver::state.currentProto == Protocol::CRSF &&
+          Receiver::state.crsfFailSafe) {
+        rawConnected = false;
       }
-    }
-#endif
-  } else {
-    unsigned long remaining = Config::LOOP_DT_US - elapsed;
-    if (remaining > 1500) {
-      delayMicroseconds(remaining / 2);
+      Receiver::state.isConnected = rawConnected;
+      snapshotConnected = rawConnected;
+      snapProto = Receiver::state.currentProto;
+      memcpy(emaSnapshot, Receiver::state.emaValues, sizeof(emaSnapshot));
+      xSemaphoreGiveRecursive(Receiver::rxMutex);
     }
   }
+
+  if (WebControl::webControlEnabled) {
+    memcpy(emaSnapshot, WebControl::webChannels, sizeof(emaSnapshot));
+    snapshotConnected = true;
+    snapProto = Protocol::WIFI;
+  }
+
+  bool killActive =
+      emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
+
+  uint8_t flags = (snapshotConnected ? 0x01 : 0x00) | (killActive ? 0x02 : 0x00);
+  publishControlSnapshot(emaSnapshot[Config::CH_STEERING],
+                         emaSnapshot[Config::CH_ELEVATOR],
+                         emaSnapshot[Config::CH_THROTTLE],
+                         emaSnapshot[Config::CH_YAW],
+                         flags);
+
+#if USE_OLED
+  if (telemMutex) {
+    if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(2))) {
+      char timeBuf[32];
+      SysMonitor::getFormattedTime(timeBuf, sizeof(timeBuf));
+      strcpy(sharedTelem.timeStr, timeBuf);
+      sharedTelem.uptimeSec = millis() / 1000;
+      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
+      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
+      sharedTelem.mode = Flight::state.mode;
+      sharedTelem.proto = snapProto;
+      sharedTelem.isConnected = snapshotConnected;
+      sharedTelem.isArmed = Flight::state.isArmed;
+      sharedTelem.leftServo = ServoSystem::state.lastPosL;
+      sharedTelem.rightServo = ServoSystem::state.lastPosR;
+      sharedTelem.offset = Flight::state.currentOffset;
+      xSemaphoreGive(telemMutex);
+    }
+  }
+#endif
 
   if (!snapshotConnected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
@@ -215,7 +245,6 @@ void loop() {
                                (float)Config::FLAP_AMP);
 
       if (snapshotConnected) {
-
         Serial.print(F("["));
         Serial.print(timeBuf);
         Serial.print(F("] [CPU:"));
@@ -251,7 +280,6 @@ void loop() {
         Serial.print(F(" Offset:"));
         Serial.println((int)currentOff);
       } else {
-
         Serial.print(F("["));
         Serial.print(timeBuf);
         Serial.print(F("] [CPU:"));
@@ -268,4 +296,6 @@ void loop() {
     if (logMutex)
       xSemaphoreGiveRecursive(logMutex);
   }
+
+  delay(2);
 }
