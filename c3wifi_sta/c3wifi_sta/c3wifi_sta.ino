@@ -47,6 +47,7 @@ void flightCoreTask(void *pvParameters) {
     ControlSnapshot cmd = readControlSnapshot();
     bool snapshotConnected = (cmd.flags & 0x01) != 0;
     bool killActive = (cmd.flags & 0x02) != 0;
+    bool reqArm = (cmd.flags & 0x04) != 0;
 
     static uint8_t killDebounce = 0;
     if (killActive) {
@@ -69,6 +70,31 @@ void flightCoreTask(void *pvParameters) {
       Flight::state.failsafeEnterMs = 0;
       ServoSystem::detachAll();
     } else {
+      bool throttleIdle = cmd.ch[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX;
+
+      if (reqArm && !Flight::state.isArmed && snapshotConnected) {
+        if (throttleIdle) {
+          Flight::state.isArmed = true;
+          Flight::state.armStartTime = 0;
+          Flight::state.phaseNeedsResync = true;
+          Flight::state.mode = FlightMode::CONNECTED;
+          Flight::state.disarmStartTime = 0;
+          Flight::state.isPerching = false;
+          Flight::state.perchAngleLevel = Config::CH_MIN;
+          ServoSystem::state.lastPosL = ServoSystem::Control::centerAngle;
+          ServoSystem::state.lastPosR = ServoSystem::Control::centerAngle;
+          ServoSystem::attachAll();
+        }
+      } else if (!reqArm && Flight::state.isArmed) {
+        if (throttleIdle) {
+          Flight::state.isArmed = false;
+          ServoSystem::detachAll();
+          Flight::state.mode = FlightMode::INIT;
+          Flight::state.armStartTime = 0;
+          Flight::state.disarmStartTime = 0;
+        }
+      }
+
       processFlightLogic(dt_us, cmd.ch[0], cmd.ch[1], cmd.ch[2], cmd.ch[3],
                          snapshotConnected);
     }
@@ -164,10 +190,12 @@ void loop() {
       WebControl::webControlEnabled;
   bool killActive =
       WebControl::webChannels[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
+  bool armRequested = (WebControl::wsArmRequest == 1);
 
   uint8_t flags = 0;
   if (snapshotConnected) flags |= 0x01;
   if (killActive) flags |= 0x02;
+  if (armRequested) flags |= 0x04;
 
   publishControlSnapshot(
       WebControl::webChannels[Config::CH_STEERING],

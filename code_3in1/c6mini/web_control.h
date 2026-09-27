@@ -203,34 +203,6 @@ void handle() {
     wsArmRequest = 0;
   }
 
-  if (webControlEnabled) {
-    int8_t armCmd = wsArmRequest;
-    bool throttleIdle = webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX;
-
-    if (armCmd == 1 && !Flight::state.isArmed) {
-      if (throttleIdle) {
-        Flight::state.isArmed = true;
-        Flight::state.armStartTime = 0;
-        Flight::state.phaseNeedsResync = true;
-        Flight::state.mode = FlightMode::CONNECTED;
-        Flight::state.disarmStartTime = 0;
-        Flight::state.isPerching = false;
-        Flight::state.perchAngleLevel = Config::CH_MIN;
-        ServoSystem::state.lastPosL = ServoSystem::Control::centerAngle;
-        ServoSystem::state.lastPosR = ServoSystem::Control::centerAngle;
-        ServoSystem::attachAll();
-      }
-    } else if (armCmd == 0 && Flight::state.isArmed) {
-      if (throttleIdle) {
-        Flight::state.isArmed = false;
-        ServoSystem::detachAll();
-        Flight::state.mode = FlightMode::INIT;
-        Flight::state.armStartTime = 0;
-        Flight::state.disarmStartTime = 0;
-      }
-    }
-  }
-
   if (now - lastTelemSendTime >= TELEM_INTERVAL_MS) {
     lastTelemSendTime = now;
     sendTelemetry();

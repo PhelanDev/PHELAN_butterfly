@@ -43,3 +43,7 @@ npm-debug.log*
 scratch/
 *.swp
 *~
+
+# History & Changelog (Local only)
+His.md
+CHANGELOG.md
