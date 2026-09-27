@@ -54,10 +54,14 @@ The repository provides **12 ready-to-flash firmware options** categorized into 
 | **GPIO 6** | Right Wing Servo Signal | 300Hz PWM output for Right Wing |
 | **GPIO 3** | RC Receiver Signal (RX) | CRSF / ExpressLRS or SBUS serial input *(Not needed for `c3wifi_sta`)* |
 | **GPIO 8** | Status LED | Blinking pattern indicator (Wi-Fi status, Arm state) |
-| **5V / VIN** | Power Input (+) | 1S LiPo (3.7V - 4.2V) or regulated 5V BEC |
-| **GND** | Ground (-) | Common ground for MCU and Servos |
+| **5V / VIN** | Power Input (+) | Regulated 5V BEC (stepped down from 2S LiPo 7.4V - 8.4V) |
+| **GND** | Ground (-) | Common ground for 2S Battery, MCU, and Servos |
 
-> **Note**: For ESP32-C6 (`c6mini`), the status LED is connected to **GPIO 14**.
+> **Power Supply & Battery Requirements**:
+> - **Required Battery**: **2S LiPo (7.4V - 8.4V)** to provide sufficient torque and high-frequency 300Hz flapping power for both servos.
+> - **MCU Power**: Use a 5V BEC or DC-DC step-down converter from the 2S battery to the `5V / VIN` pin (never connect 8.4V directly to the ESP32 5V rail).
+> - **Servo Power**: Connect servo positive to the appropriate power rail (direct 2S for HV servos, or a dedicated BEC rail) and **always share a common GND** with the ESP32.
+> - For ESP32-C6 (`c6mini`), the status LED is connected to **GPIO 14**.
 
 ---
 

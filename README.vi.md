@@ -52,10 +52,14 @@ Toàn bộ dự án có **12 bản firmware** chia làm 6 nhánh tính năng, m�
 | **GPIO 6** | Tín hiệu Servo Cánh Phải | Xuất xung PWM 300Hz cho servo phải |
 | **GPIO 3** | Tín hiệu Bộ Thu RC (RX) | Cắm chân TX của RX ELRS / CRSF hoặc SBUS *(Bản `c3wifi_sta` không cần dùng)* |
 | **GPIO 8** | Đèn LED Trạng Thái | Nhấp nháy báo trạng thái Wi-Fi và ARM |
-| **VIN / 5V** | Nguồn Cấp (+) | Pin LiPo 1S (3.7V - 4.2V) hoặc mạch nguồn BEC 5V |
-| **GND** | Mass (-) | Cực âm chung cho ESP32 và 2 Servo |
+| **VIN / 5V** | Nguồn Cấp (+) | Mạch nguồn BEC 5V (hạ áp từ pin LiPo 2S 7.4V - 8.4V) |
+| **GND** | Mass (-) | Cực âm chung cho Pin 2S, ESP32 và 2 Servo |
 
-> **Lưu ý**: Đối với board ESP32-C6 (`c6mini`), đèn LED trạng thái được nối vào **GPIO 14**.
+> **Yêu cầu Nguồn Pin (Power Supply)**:
+> - **Loại pin**: Sử dụng pin LiPo **2S (7.4V - 8.4V)** để đảm bảo công suất, mô-men xoắn và lực nâng cho 2 servo cánh vỗ ở tần số 300Hz.
+> - **Cấp nguồn Vi điều khiển**: Dùng mạch hạ áp DC-DC hoặc BEC 5V từ pin 2S cấp vào chân `VIN / 5V` của ESP32 (không cấp trực tiếp 8.4V vào chân 5V của ESP32 để tránh làm cháy chip).
+> - **Cấp nguồn Servo**: Nối dây dương servo vào nguồn cấp phù hợp (pin 2S cho HV servo hoặc đường BEC riêng) và **bắt buộc nối chung cực âm GND** với ESP32.
+> - Đối với board ESP32-C6 (`c6mini`), đèn LED trạng thái được nối vào **GPIO 14**.
 
 ---
 
