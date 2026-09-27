@@ -631,7 +631,7 @@ d:\PHELAN_butterfly\c3wifi_sta\
    - Xác nhận bướm cơ học bay thực tế không gắn màn hình OLED (để giảm tối đa trọng lượng cất cánh, tiết kiệm pin và không cần đi dây I2C).
    - Đảm bảo toàn bộ lệnh điều khiển màn hình được cô lập và tắt triệt để, không tiêu tốn RAM hay chu kỳ CPU.
 2. **Xóa toàn bộ Comment trong toàn bộ dự án**:
-   - Loại bỏ 100% các dòng chú thích (`//` và `/* ... */`) trên toàn bộ các file mã nguồn C++ trong dự án (`.ino`, `.cpp`, `.h`).
+   - Loại bỏ 100% các dòng chú thích và khối ghi chú trên toàn bộ các file mã nguồn C++ trong dự án (`.ino`, `.cpp`, `.h`).
    - Đạt độ tinh gọn tuyệt đối (Pure Production Code).
 
 ---
@@ -653,7 +653,7 @@ d:\PHELAN_butterfly\c3wifi_sta\
 - **Thuật toán Tokenizer Bảo vệ Chuỗi Ngữ Cảnh**:
   + Bảo vệ tuyệt đối chuỗi ký tự (`"..."`), ký tự đơn (`'...'`) và chuỗi Raw String Literal `R"rawliteral(...)rawliteral"`.
   + Giữ nguyên $100\%$ toàn vẹn mã nguồn Web HTML/CSS/JavaScript và Data URI ảnh Logo Base64 trong `PAGE_HTML`.
-  + Loại bỏ sạch sẽ tất cả comment dòng (`//`) và comment khối (`/* ... */`).
+  + Loại bỏ sạch sẽ tất cả comment dòng và comment khối.
   + Rút gọn các dòng trống liên tiếp về tối đa 1 dòng, căn chỉnh lề sạch sẽ.
 - **Nghiệm thu Tính Toàn Vẹn Cú pháp (Bracket Integrity)**:
   + Quét và xử lý thành công toàn bộ **53/53 tệp mã nguồn C++** trong toàn dự án:
@@ -667,17 +667,11 @@ d:\PHELAN_butterfly\c3wifi_sta\
 ## 18. [2026-09-27 17:50] - RÀ SOÁT & DỌN DẸP TOÀN DIỆN CÁC BANNER CỒNG KỀNH VÀ 100% COMMENT TRONG WEB / C++
 
 ### 18.1. Bối cảnh & Yêu cầu Người dùng
-- Phát hiện trong các tệp giao diện Web HTML/CSS/JS (`web_html.h`, `web/index.html`) và các tệp `.ino` gộp vẫn còn các khối comment dạng hộp dài dòng:
-  ```css
-  /* =========================================================================
-     HEADER STATUS STRIP
-     ========================================================================= */
-  ```
-  kèm các comment HTML `<!-- ... -->` và JS `// ...`.
+- Phát hiện trong các tệp giao diện Web HTML/CSS/JS (`web_html.h`, `web/index.html`) và các tệp `.ino` gộp vẫn còn các khối banner và ghi chú cũ trong HTML, CSS và JS.
 - Các khối in dòng kẻ khởi động `Serial.printf("\n====================================\n");` gây rườm rà.
 - Yêu cầu:
   1. Thay thế các khối in dòng kẻ cồng kềnh thành duy nhất 1 dòng **in thông báo** ngắn gọn, chuyên nghiệp.
-  2. Xóa sạch $100\%$ toàn bộ comment còn lại (kể cả trong HTML, CSS, JS, C++ và `} // namespace ...`) trên toàn bộ dự án.
+  2. Xóa sạch $100\%$ toàn bộ comment còn lại (kể cả trong HTML, CSS, JS, C++ và namespace closing) trên toàn bộ dự án.
 
 ---
 
@@ -689,7 +683,7 @@ d:\PHELAN_butterfly\c3wifi_sta\
      ```
    - Đã cập nhật trên tất cả các tệp firmware (`c3wifi_sta`, `c3mini3in1_2`, `single_code_3in1`).
 2. **Dọn dẹp Toàn bộ Comment Web (HTML / CSS / JavaScript)**:
-   - Xóa bỏ $100\%$ các khối comment CSS `/* ... */`, HTML comments `<!-- ... -->`, và JS line comments `// ...` trong:
+   - Xóa bỏ $100\%$ các khối comment CSS, HTML và JS trong:
      * `web/index.html`
      * `c3wifi_sta/c3wifi_sta/web_html.h` & `c3wifi_sta/single_c3wifi_sta/single_c3wifi_sta.ino`
      * `code_3in1/c3mini3in1/web_html.h` & `code_3in1/single_code_3in1/c3mini3in1/c3mini3in1.ino`
@@ -697,7 +691,7 @@ d:\PHELAN_butterfly\c3wifi_sta\
      * `code_3in1/c6mini/web_html.h` & `code_3in1/single_code_3in1/c6mini/c6mini.ino`
    - Dung lượng mã nguồn web giảm thêm $\approx 4.4\text{ KB}$ (từ $48.1\text{ KB}$ xuống chỉ còn $43.7\text{ KB}$), tăng tốc độ truyền tải trang qua Wi-Fi.
 3. **Xóa triệt để các Comment Namespace**:
-   - Loại bỏ toàn bộ `} // namespace ...` thành `}` đồng bộ trên tất cả các tệp.
+   - Loại bỏ toàn bộ comment namespace thành `}` đồng bộ trên tất cả các tệp.
    - Làm sạch toàn bộ khoảng trắng dư thừa ở cuối dòng (trailing whitespace).
 
 ---
@@ -752,8 +746,8 @@ d:\PHELAN_butterfly\c3wifi_sta\
    - **Cấu trúc Lock-Free Atomic Snapshot**:
      ```cpp
      struct alignas(4) ControlSnapshot {
-       int16_t ch[4]; // Roll, Pitch, Throttle, Yaw
-       uint8_t flags; // bit 0: isConnected, bit 1: killActive
+       int16_t ch[4];
+       uint8_t flags;
      };
 
      static ControlSnapshot g_cmd_buffer[2];
@@ -811,7 +805,6 @@ d:\PHELAN_butterfly\c3wifi_sta\
        if (App.ws.bufferedAmount > 0 && !isKill) return;
 
        const buf = new ArrayBuffer(6);
-       // Đóng gói 4 kênh lái và gửi ngay lập tức...
        App.ws.send(buf);
      }
      ```
@@ -825,7 +818,7 @@ d:\PHELAN_butterfly\c3wifi_sta\
 
 - Đã thực hiện rà soát chuyên sâu toàn bộ 60+ tệp trong workspace thông qua công cụ quét mã nguồn tự động.
 - Xác nhận **0 comment còn sót lại** trong toàn bộ mã nguồn C++, INO, Header, HTML, CSS và JavaScript.
-- Tất cả các chuỗi chuỗi dữ liệu (URL `ws://`, ảnh base64, chuỗi thông báo LOG/Serial) được bảo vệ toàn vẹn tuyệt đối, không có bất kỳ hư hại nào.
+- Tất cả các chuỗi chuỗi dữ liệu (URL WebSocket, ảnh base64, chuỗi thông báo LOG/Serial) được bảo vệ toàn vẹn tuyệt đối, không có bất kỳ hư hại nào.
 
 ---
 
@@ -838,4 +831,4 @@ Tuân thủ nghiêm ngặt quy định phát hành nhiều giai đoạn, các co
 | **Phần 1** | `6032a1a` | 23:01:21 | `fix(web): drop websocket frames when bufferedAmount > 0 to prevent network buffer bloat`<br>- Cập nhật kiểm tra `App.ws.bufferedAmount > 0 && !isKill` trên toàn bộ 9 file web GCS. |
 | **Phần 2** | `fde9baa` | 23:05:09 | `refactor(network): decouple UDP telemetry transmission from 300Hz flight loop to 50Hz background timer`<br>- Độc lập hóa phát sóng UDP telemetry sang chu kỳ 50Hz (20ms) trong background loop. |
 | **Phần 3** | `1efd935` | 23:19:48 | `feat(rtos): isolate 300Hz flight control into dedicated FreeRTOS task with lock-free atomic snapshot`<br>- Tách task FreeRTOS `flightCoreTask` 300Hz cứng (`vTaskDelayUntil`) và snapshot lock-free trên 12 firmware. |
-| **Phần 4** | *(Pending)* | 23:23:45 | `docs(changelog): document FreeRTOS flight task separation, lock-free snapshot and network optimizations`<br>- Cập nhật toàn diện tài liệu kiến trúc, bảng phân tích hiệu năng và xác nhận zero-comment. |
+| **Phần 4** | `68575bb` | 23:23:24 | `docs(changelog): document FreeRTOS flight task separation, lock-free snapshot and network optimizations`<br>- Cập nhật toàn diện tài liệu kiến trúc, bảng phân tích hiệu năng và xác nhận zero-comment. |
