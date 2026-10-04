@@ -3,8 +3,6 @@
 [![C++17](https://img.shields.io/badge/Language-C%2B%2B17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![Hardware](https://img.shields.io/badge/MCU-ESP32--C3%20%7C%20ESP32--C6-green.svg)](https://www.espressif.com/)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
-[![Control Protocol](https://img.shields.io/badge/Control-CRSF%20%7C%20SBUS%20%7C%20WiFi%20Web-orange.svg)]()
-[![Web GCS](https://img.shields.io/badge/Web%20Cockpit-WebSocket%2050Hz-cyan.svg)]()
 [![Author](https://img.shields.io/badge/Author-PhelanDev-red.svg)](https://github.com/PhelanDev)
 
 **PHELAN BUTTERFLY** is a high-performance bionic ornithopter flight control system designed for **ESP32-C3** and **ESP32-C6** microcontrollers. It features bio-inspired flapping wing kinematics, real-time dynamic amplitude adjustment, and versatile control options via traditional RC transmitters or direct web browser Ground Control Station (GCS).
@@ -108,4 +106,4 @@ The repository provides **12 ready-to-flash firmware options** categorized into 
 
 This project is proprietary software (**Proprietary License**). All rights reserved by **PhelanDev**. Unauthorized copying, modification, reverse engineering, redistribution, or commercial use is strictly prohibited. See the [LICENSE](LICENSE) file for details.
 
-Developed with passion by **[PhelanDev](https://github.com/PhelanDev)**.
+Author: **[PhelanDev](https://github.com/PhelanDev)**.

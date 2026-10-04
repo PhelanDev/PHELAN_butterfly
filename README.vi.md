@@ -67,7 +67,7 @@ Toàn bộ dự án có **12 bản firmware** chia làm 6 nhánh tính năng, m�
 
 ### 1. Cấu hình Arduino IDE
 1. Tải và cài đặt **Arduino IDE** (khuyên dùng bản 2.x).
-2. Thêm gói board ESP32 trong *Preferences* $\rightarrow$ *Additional boards manager URLs*:
+2. Thêm gói board ESP32 trong *Preferences* -> *Additional boards manager URLs*:
    `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
 3. Cài đặt các thư viện cần thiết trong *Library Manager*:
    - `ESP32Servo`
