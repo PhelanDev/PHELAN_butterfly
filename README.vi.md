@@ -2,10 +2,10 @@
 
 [![C++17](https://img.shields.io/badge/Ng%C3%B4n%20ng%E1%BB%AF-C%2B%2B17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![Hardware](https://img.shields.io/badge/Vi%20%C4%91i%E1%BB%81u%20khi%E1%BB%83n-ESP32--C3%20%7C%20ESP32--C6-green.svg)](https://www.espressif.com/)
-[![License: MIT](https://img.shields.io/badge/Gi%E1%BA%A5y%20ph%C3%A9p-MIT-yellow.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/Gi%E1%BA%A5y%20ph%C3%A9p-B%E1%BA%A3n%20quy%E1%BB%81n%20%C4%91%C3%B3ng-red.svg)](LICENSE)
 [![Tác giả](https://img.shields.io/badge/T%C3%A1c%20gi%E1%BA%A3-PhelanDev-red.svg)](https://github.com/PhelanDev)
 
-**PHELAN BUTTERFLY** là dự án mã nguồn mở điều khiển bay cho bướm cơ học vỗ cánh sinh học (Bionic RC Ornithopter) chạy trên vi điều khiển **ESP32-C3** và **ESP32-C6**. Dự án tích hợp các thuật toán khí động học cánh vỗ tiên tiến, bù biên độ động theo tay ga, và hỗ trợ đa dạng phương thức điều khiển: từ tay cầm RC truyền thống cho đến buồng lái Web Ground Control Station (GCS) trên điện thoại thông minh.
+**PHELAN BUTTERFLY** là hệ thống điều khiển bay cho bướm cơ học vỗ cánh sinh học (Bionic RC Ornithopter) chạy trên vi điều khiển **ESP32-C3** và **ESP32-C6**. Dự án tích hợp các thuật toán khí động học cánh vỗ tiên tiến, bù biên độ động theo tay ga, và hỗ trợ đa dạng phương thức điều khiển: từ tay cầm RC truyền thống cho đến buồng lái Web Ground Control Station (GCS) trên điện thoại thông minh.
 
 ---
 
@@ -106,6 +106,6 @@ Toàn bộ dự án có **12 bản firmware** chia làm 6 nhánh tính năng, m�
 
 ## Giấy Phép Bản Quyền (License)
 
-Dự án được phân phối dưới giấy phép mã nguồn mở **MIT License** - xem chi tiết tại tệp [LICENSE](LICENSE).
+Dự án thuộc bản quyền đóng (**Proprietary License**), được bảo lưu toàn bộ quyền sở hữu trí tuệ bởi **PhelanDev**. Mọi hành vi sao chép, chỉnh sửa, dịch ngược, phân phối lại hoặc sử dụng cho mục đích thương mại khi chưa có sự cho phép bằng văn bản đều bị nghiêm cấm. Xem chi tiết tại tệp [LICENSE](LICENSE).
 
 Tác giả: **[PhelanDev](https://github.com/PhelanDev)**.
