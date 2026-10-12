@@ -971,7 +971,7 @@ function initWebSocket() {
     return;
   }
 
-  const wsUrl = `ws:
+  const wsUrl = `ws://${location.host}/ws`;
   App.ws = new WebSocket(wsUrl);
   App.ws.binaryType = 'arraybuffer';
 

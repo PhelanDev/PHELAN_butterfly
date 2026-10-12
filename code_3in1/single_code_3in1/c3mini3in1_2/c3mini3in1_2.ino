@@ -2624,7 +2624,7 @@ function initWebSocket() {
     return;
   }
 
-  const wsUrl = `ws:
+  const wsUrl = `ws://${location.host}/ws`;
   App.ws = new WebSocket(wsUrl);
   App.ws.binaryType = 'arraybuffer';
 
@@ -2795,7 +2795,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       memcpy(buf, data, copyLen);
       buf[copyLen] = '\0';
 
-      if (strncmp(buf, "SYNC:", 5) == 0) {
+      if (strcmp(buf, "PING") == 0) {
+        client->text("PONG");
+      } else if (strncmp(buf, "SYNC:", 5) == 0) {
         int y, mon, d, h, m, s;
         if (sscanf(buf + 5, "%d-%d-%d_%d:%d:%d", &y, &mon, &d, &h, &m, &s) ==
             6) {

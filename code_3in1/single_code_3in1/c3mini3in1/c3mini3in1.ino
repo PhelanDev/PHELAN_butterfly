@@ -2434,7 +2434,7 @@ function initWebSocket() {
     return;
   }
 
-  const wsUrl = `ws:
+  const wsUrl = `ws://${location.host}/ws`;
   App.ws = new WebSocket(wsUrl);
   App.ws.binaryType = 'arraybuffer';
 
@@ -2587,13 +2587,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       webChannels[Config::CH_KILL_SWITCH] = (pkt->flags & 0x02) ? 1900 : 1000;
 
       webControlEnabled = true;
-    } else if (info->opcode == WS_TEXT && len > 5) {
+    } else if (info->opcode == WS_TEXT && len >= 4) {
 
       char buf[48];
       size_t copyLen = (len < sizeof(buf) - 1) ? len : sizeof(buf) - 1;
       memcpy(buf, data, copyLen);
       buf[copyLen] = '\0';
-      if (strncmp(buf, "SYNC:", 5) == 0) {
+      if (strcmp(buf, "PING") == 0) {
+        client->text("PONG");
+      } else if (strncmp(buf, "SYNC:", 5) == 0 && len > 5) {
         int y, mon, d, h, m, s;
         if (sscanf(buf + 5, "%d-%d-%d_%d:%d:%d", &y, &mon, &d, &h, &m, &s) ==
             6) {
