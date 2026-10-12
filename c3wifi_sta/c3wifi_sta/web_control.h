@@ -3,7 +3,7 @@
 #include "web_html.h"
 #include "flight_control.h"
 #include "servo_system.h"
-#include "display_oled.h"
+#include "sys_monitor.h"
 
 void sendChannelsUDP(int16_t *channels) {
   if (!udpBridgeEnabled)

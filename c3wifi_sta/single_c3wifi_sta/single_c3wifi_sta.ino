@@ -14,19 +14,12 @@
 #include "esp_wifi.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#if __has_include(<hal/brownout_ll.h>)
 #include "hal/brownout_ll.h"
-
 __attribute__((constructor)) static void disable_bod_early() {
   brownout_ll_bod_enable(false);
   brownout_ll_intr_enable(false);
 }
-
-#define USE_OLED 0
-
-#if USE_OLED
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Wire.h>
 #endif
 
 #include <ESP32Servo.h>
@@ -181,21 +174,6 @@ SemaphoreHandle_t logMutex = NULL;
 #endif
 
 enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
-
-struct DisplayTelemetry {
-  char timeStr[32];
-  uint32_t uptimeSec;
-  float cpuTemp;
-  uint32_t cpuFreq;
-  FlightMode mode;
-  Protocol proto;
-  bool isConnected;
-  bool isArmed;
-  int leftServo;
-  int rightServo;
-  float offset;
-  char wifiIP[20];
-};
 
 #include <Arduino.h>
 
@@ -1292,32 +1270,6 @@ window.addEventListener('DOMContentLoaded', () => {
 </html>
 )rawhtml";
 
-#if USE_OLED
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SDA_PIN 20
-#define SCL_PIN 21
-
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-TaskHandle_t displayTaskHandle = NULL;
-
-DisplayTelemetry sharedTelem = {"2026-09-27 00:00:00",
-                                0,
-                                0.0f,
-                                160,
-                                FlightMode::INIT,
-                                Protocol::WIFI,
-                                false,
-                                false,
-                                90,
-                                90,
-                                0.0f,
-                                "0.0.0.0"};
-
-SemaphoreHandle_t telemMutex = NULL;
-#endif
-
 namespace SysMonitor {
 struct DateTime {
   uint16_t year;
@@ -1413,54 +1365,66 @@ void setTime(int y, int mon, int d, int h, int m, int s) {
 }
 
 void checkSerialTimeSync() {
-  if (Serial.available()) {
-    String str = Serial.readStringUntil('\n');
-    str.trim();
-    if (str.startsWith("SYNC:")) {
+  while (Serial.available()) {
+    String input = Serial.readStringUntil('
+');
+    input.trim();
+    if (input.startsWith("SETTIME=")) {
       int y, mon, d, h, m, s;
-      if (sscanf(str.c_str() + 5, "%d-%d-%d_%d:%d:%d", &y, &mon, &d, &h, &m,
-                 &s) == 6) {
-        setTime(y, mon, d, h, m, s);
-        Serial.println(F("[TIME] Synchronized with host successfully."));
+      if (sscanf(input.substring(8).c_str(), "%d-%d-%d %d:%d:%d", &y, &mon, &d,
+                 &h, &m, &s) == 6) {
+        bootTime.year = y;
+        bootTime.month = mon;
+        bootTime.day = d;
+        bootTime.hour = h;
+        bootTime.minute = m;
+        bootTime.second = s;
+        bootMillis = millis();
+        Serial.println(
+            F("[INFO] System time synchronized successfully to Hanoi time!"));
       }
     }
   }
 }
 
-float getCPUTemp() {
-  static float filteredTemp = 42.0f;
-  static unsigned long lastReadMs = 0;
-  unsigned long now = millis();
+float filteredTemp = 42.0f;
+bool tempFirstSample = true;
 
-  if (now - lastReadMs >= 200 || lastReadMs == 0) {
-    lastReadMs = now;
-    float currentRaw = 42.0f;
-#if defined(HAS_NEW_TEMP_SENSOR)
-    static temperature_sensor_handle_t temp_handle = NULL;
-    if (temp_handle == NULL) {
-      temperature_sensor_config_t temp_sensor_config =
-          TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
-      if (temperature_sensor_install(&temp_sensor_config, &temp_handle) ==
-          ESP_OK) {
-        temperature_sensor_enable(temp_handle);
+float getCPUTemp() {
+  float currentRaw = 42.0f;
+#if defined(HAS_NEW_TEMP_SENSOR) && HAS_NEW_TEMP_SENSOR
+  static temperature_sensor_handle_t temp_sensor = NULL;
+  static bool sensor_inited = false;
+  if (!sensor_inited) {
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&temp_sensor_config, &temp_sensor) == ESP_OK) {
+      if (temperature_sensor_enable(temp_sensor) == ESP_OK) {
+        sensor_inited = true;
       }
     }
-    if (temp_handle != NULL) {
-      temperature_sensor_get_celsius(temp_handle, &currentRaw);
+  }
+  if (sensor_inited) {
+    float ts_val = 0.0f;
+    if (temperature_sensor_get_celsius(temp_sensor, &ts_val) == ESP_OK) {
+      currentRaw = ts_val;
+    } else {
+      currentRaw = temperatureRead();
     }
-#elif defined(HAS_LEGACY_TEMP_SENSOR)
-    static bool legacy_init = false;
-    if (!legacy_init) {
-      temp_sensor_config_t tsens = TSENS_CONFIG_DEFAULT();
-      temp_sensor_set_config(tsens);
-      temp_sensor_start();
-      legacy_init = true;
-    }
-    temp_sensor_read_celsius(&currentRaw);
+  } else {
+    currentRaw = temperatureRead();
+  }
+#else
+  currentRaw = temperatureRead();
 #endif
-    if (isnan(currentRaw) || currentRaw < 10.0f || currentRaw > 105.0f) {
-      currentRaw = 42.0f;
-    }
+
+  if (isnan(currentRaw) || currentRaw < 10.0f || currentRaw > 105.0f) {
+    currentRaw = 42.0f;
+  }
+
+  if (tempFirstSample) {
+    filteredTemp = currentRaw;
+    tempFirstSample = false;
+  } else {
     filteredTemp = (filteredTemp * 0.90f) + (currentRaw * 0.10f);
   }
   return filteredTemp;
@@ -1468,89 +1432,27 @@ float getCPUTemp() {
 
 uint32_t getCPUMhz() { return getCpuFrequencyMhz(); }
 
-void getAsciiWave(char *buf, size_t len, float offset, float amp) {
-  if (len < 10)
-    return;
-  const char chars[] = {'_', '.', '-', '~', '=', '^', '"', '*'};
-  int numChars = sizeof(chars);
-  float norm = (offset + amp) / (2.0f * amp);
-  norm = constrain(norm, 0.0f, 1.0f);
-  int idx = (int)(norm * (numChars - 1));
-  snprintf(buf, len, "[%c%c%c%c%c]", chars[idx], chars[idx], chars[idx],
-           chars[idx], chars[idx]);
-}
+void getAsciiWave(char *buffer, size_t len, float offset, float maxAmp) {
+  int width = 20;
+  if (maxAmp <= 0)
+    maxAmp = 1.0f;
+  int pos = (int)((offset + maxAmp) / (2.0f * maxAmp) * width);
+  pos = constrain(pos, 0, width);
 
-}
-
-#if USE_OLED
-void vDisplayTask(void *pvParameters) {
-  unsigned long lastDraw = 0;
-  for (;;) {
-    unsigned long now = millis();
-    if (now - lastDraw >= 100) {
-      lastDraw = now;
-      DisplayTelemetry localTelem = {};
-      bool dataOk = false;
-      if (telemMutex) {
-        if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(10))) {
-          memcpy(&localTelem, &sharedTelem, sizeof(DisplayTelemetry));
-          dataOk = true;
-          xSemaphoreGive(telemMutex);
-        }
-      }
-
-      if (dataOk) {
-        display.clearDisplay();
-        display.setTextSize(1);
-        display.setTextColor(SSD1306_WHITE);
-
-        display.setCursor(0, 0);
-        display.print(localTelem.timeStr + 11);
-        display.setCursor(64, 0);
-        display.printf("%3.0fC %3uM", localTelem.cpuTemp,
-                       (unsigned int)localTelem.cpuFreq);
-        display.drawFastHLine(0, 9, 128, SSD1306_WHITE);
-
-        display.setCursor(0, 12);
-        display.print(F("MODE: "));
-        switch (localTelem.mode) {
-        case FlightMode::INIT:
-          display.print(F("STANDBY"));
-          break;
-        case FlightMode::CONNECTED:
-          display.print(localTelem.isArmed ? F("ARMED (FLY)") : F("DISARMED"));
-          break;
-        case FlightMode::PERCHING:
-          display.print(F("PERCHING"));
-          break;
-        case FlightMode::FAILSAFE:
-          display.print(F("FAILSAFE"));
-          break;
-        }
-
-        display.setCursor(0, 22);
-        display.print(F("NET:  "));
-        display.print(localTelem.isConnected ? F("WIFI STA OK") : F("SEARCHING..."));
-
-        display.setCursor(0, 32);
-        display.printf("IP: %s", localTelem.wifiIP);
-
-        display.setCursor(0, 42);
-        display.printf("SVO: L%3d R%3d", localTelem.leftServo,
-                       localTelem.rightServo);
-
-        display.setCursor(0, 52);
-        display.printf("OFFSET: %+3.1f DEG", localTelem.offset);
-
-        display.display();
-      }
-      vTaskDelay(localTelem.isArmed ? pdMS_TO_TICKS(500) : pdMS_TO_TICKS(100));
+  buffer[0] = '[';
+  for (int i = 0; i < width; i++) {
+    if (i == width / 2) {
+      buffer[i + 1] = '|';
+    } else if (i == pos) {
+      buffer[i + 1] = '*';
     } else {
-      vTaskDelay(pdMS_TO_TICKS(20));
+      buffer[i + 1] = '-';
     }
   }
+  buffer[width + 1] = ']';
+  buffer[width + 2] = ' ';
 }
-#endif
+}
 
 namespace ServoSystem {
 
@@ -1705,9 +1607,14 @@ static const uint16_t PROGMEM atri_LUT[256] = {
     16270, 16334, 16384};
 
 void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
   if (state.phaseNeedsResync) {
     int32_t ratioScaled =
-        (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+        (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
     ratioScaled = constrain(ratioScaled, -1000, 1000);
 
     bool negate = (ratioScaled < 0);
@@ -1725,11 +1632,6 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phase = (uint16_t)signedPhase;
     state.phaseNeedsResync = false;
   }
-
-  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
-
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
 
   uint32_t speed = Config::FLAP_SPEED_MIN +
                    (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *
@@ -2383,37 +2285,7 @@ void setup() {
   pinMode(Config::LED_PIN, OUTPUT);
   digitalWrite(Config::LED_PIN, HIGH);
 
-#if USE_OLED
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("[ERROR] OLED Init Failed! Running in headless mode."));
-  } else {
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(16, 10);
-    display.println(F("PHELAN BUTTERFLY"));
-    display.drawFastHLine(16, 22, 96, SSD1306_WHITE);
-    display.setCursor(24, 28);
-    display.println(F("STA WIFI SYSTEM"));
-    display.setCursor(20, 42);
-    display.println(F("INITIALIZING..."));
-    display.setCursor(24, 54);
-    display.printf("RST REASON: %d", (int)rstReason);
-    display.display();
-    delay(1000);
-
-    telemMutex = xSemaphoreCreateMutex();
-    if (telemMutex != NULL) {
-      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-      xTaskCreate(vDisplayTask, "OLED_Task", 4096, NULL, 1, &displayTaskHandle);
-    }
-  }
-#endif
-
-  ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
+ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
   ServoSystem::state.lastPosR = ServoSystem::state.centerAngle;
 
   WebControl::init();
@@ -2456,30 +2328,7 @@ void loop() {
       WebControl::webChannels[Config::CH_YAW],
       flags);
 
-#if USE_OLED
-  if (telemMutex) {
-    if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(2))) {
-      char timeBuf[32];
-      SysMonitor::getFormattedTime(timeBuf, sizeof(timeBuf));
-      strcpy(sharedTelem.timeStr, timeBuf);
-      sharedTelem.uptimeSec = millis() / 1000;
-      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-      sharedTelem.mode = Flight::state.mode;
-      sharedTelem.proto = Protocol::WIFI;
-      sharedTelem.isConnected = snapshotConnected;
-      sharedTelem.isArmed = Flight::state.isArmed;
-      sharedTelem.leftServo = ServoSystem::state.lastPosL;
-      sharedTelem.rightServo = ServoSystem::state.lastPosR;
-      sharedTelem.offset = Flight::state.currentOffset;
-      strncpy(sharedTelem.wifiIP, WebControl::deviceIP,
-              sizeof(sharedTelem.wifiIP) - 1);
-      xSemaphoreGive(telemMutex);
-    }
-  }
-#endif
-
-  if (!snapshotConnected) {
+if (!snapshotConnected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
   } else {
     digitalWrite(Config::LED_PIN,

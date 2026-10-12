@@ -1,6 +1,6 @@
 #include "config.h"
 #include "web_html.h"
-#include "display_oled.h"
+#include "sys_monitor.h"
 #include "servo_system.h"
 #include "flight_control.h"
 #include "receiver.h"
@@ -114,6 +114,7 @@ void flightCoreTask(void *pvParameters) {
 }
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
   SysMonitor::parseCompileTime();
   logMutex = xSemaphoreCreateRecursiveMutex();
@@ -126,34 +127,7 @@ void setup() {
   pinMode(Config::LED_PIN, OUTPUT);
   digitalWrite(Config::LED_PIN, HIGH);
 
-#if USE_OLED
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("[ERROR] OLED Init Failed! Running in headless mode."));
-  } else {
-
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(16, 15);
-    display.println(F("PHELAN BUTTERFLY"));
-    display.drawFastHLine(16, 27, 96, SSD1306_WHITE);
-    display.setCursor(24, 33);
-    display.println(F("TELEMETRY SYSTEM"));
-    display.setCursor(20, 48);
-    display.println(F("INITIALIZING..."));
-    display.display();
-    delay(1000);
-
-    telemMutex = xSemaphoreCreateMutex();
-    if (telemMutex != NULL) {
-      xTaskCreate(vDisplayTask, "OLED_Task", 4096, NULL, 1, &displayTaskHandle);
-    }
-  }
-#endif
-
-  xTaskCreate(vReceiverTask, "RX_Task", 8192, NULL, configMAX_PRIORITIES - 2,
+xTaskCreate(vReceiverTask, "RX_Task", 8192, NULL, configMAX_PRIORITIES - 2,
               &rxTaskHandle);
 
   Receiver::init(&rxSerial, rxTaskHandle);
@@ -229,28 +203,7 @@ void loop() {
                          emaSnapshot[Config::CH_YAW],
                          flags);
 
-#if USE_OLED
-  if (telemMutex) {
-    if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(2))) {
-      char timeBuf[32];
-      SysMonitor::getFormattedTime(timeBuf, sizeof(timeBuf));
-      strcpy(sharedTelem.timeStr, timeBuf);
-      sharedTelem.uptimeSec = millis() / 1000;
-      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-      sharedTelem.mode = Flight::state.mode;
-      sharedTelem.proto = snapProto;
-      sharedTelem.isConnected = snapshotConnected;
-      sharedTelem.isArmed = Flight::state.isArmed;
-      sharedTelem.leftServo = ServoSystem::state.lastPosL;
-      sharedTelem.rightServo = ServoSystem::state.lastPosR;
-      sharedTelem.offset = Flight::state.currentOffset;
-      xSemaphoreGive(telemMutex);
-    }
-  }
-#endif
-
-  if (!snapshotConnected) {
+if (!snapshotConnected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
   } else {
     digitalWrite(Config::LED_PIN,

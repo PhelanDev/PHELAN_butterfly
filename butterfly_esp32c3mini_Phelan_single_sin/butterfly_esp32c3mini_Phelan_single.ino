@@ -2,6 +2,16 @@
 #include <esp_arduino_version.h>
 #endif
 #include <Arduino.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#if __has_include(<hal/brownout_ll.h>)
+#include "hal/brownout_ll.h"
+__attribute__((constructor)) static void disable_bod_early() {
+  brownout_ll_bod_enable(false);
+  brownout_ll_intr_enable(false);
+}
+#endif
+
 #include <ESP32Servo.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -403,9 +413,13 @@ static const uint16_t asin_LUT[256] = {
     15077, 15460, 16384};
 
 void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
   if (state.phaseNeedsResync) {
-    int32_t ratioScaled =
-        (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+    int32_t ratioScaled = (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
     ratioScaled = constrain(ratioScaled, -1000, 1000);
 
     bool negate = (ratioScaled < 0);
@@ -424,15 +438,10 @@ void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
     state.phaseNeedsResync = false;
   }
 
-  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
-
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
-
   uint32_t speed = Config::FLAP_SPEED_MIN +
                    (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *
-                       (Config::FLAP_SPEED_MAX - Config::FLAP_SPEED_MIN) /
-                       (Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
+                   (Config::FLAP_SPEED_MAX - Config::FLAP_SPEED_MIN) /
+                   (Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
 
   if (dt_us > 0) {
     uint32_t phaseDelta = ((uint64_t)speed * dt_us) / 1000000;
@@ -1197,6 +1206,7 @@ void flightCoreTask(void *pvParameters) {
 }
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
   logMutex = xSemaphoreCreateRecursiveMutex();
   Serial.printf("Reset reason: %d\n", esp_reset_reason());

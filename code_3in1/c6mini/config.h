@@ -13,17 +13,19 @@
 #define HAS_LEGACY_TEMP_SENSOR 1
 #endif
 
-#define USE_OLED 0
-
-#if USE_OLED
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Wire.h>
-#endif
-
 #include <ESP32Servo.h>
 #include <ESPAsyncWebServer.h>
 #include "esp_wifi.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#if __has_include(<hal/brownout_ll.h>)
+#include "hal/brownout_ll.h"
+__attribute__((constructor)) static void disable_bod_early() {
+  brownout_ll_bod_enable(false);
+  brownout_ll_intr_enable(false);
+}
+#endif
+
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -197,16 +199,3 @@ SemaphoreHandle_t logMutex = NULL;
 
 enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
 
-struct DisplayTelemetry {
-  char timeStr[32];
-  uint32_t uptimeSec;
-  float cpuTemp;
-  uint32_t cpuFreq;
-  FlightMode mode;
-  Protocol proto;
-  bool isConnected;
-  bool isArmed;
-  int leftServo;
-  int rightServo;
-  float offset;
-};

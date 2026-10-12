@@ -45,8 +45,14 @@ static const uint16_t atri_LUT[256] = {
 };
 
 void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
   if (state.phaseNeedsResync) {
-    int32_t ratioScaled = (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+    int32_t ratioScaled =
+        (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
     ratioScaled = constrain(ratioScaled, -1000, 1000);
 
     bool negate = (ratioScaled < 0);
@@ -65,15 +71,10 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phaseNeedsResync = false;
   }
 
-  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
-
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
-
   uint32_t speed = Config::FLAP_SPEED_MIN +
                    (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *
-                   (Config::FLAP_SPEED_MAX - Config::FLAP_SPEED_MIN) /
-                   (Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
+                       (Config::FLAP_SPEED_MAX - Config::FLAP_SPEED_MIN) /
+                       (Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
 
   if (dt_us > 0) {
     uint32_t phaseDelta = ((uint64_t)speed * dt_us) / 1000000;

@@ -14,20 +14,13 @@
 #include "esp_wifi.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#if __has_include(<hal/brownout_ll.h>)
 #include "hal/brownout_ll.h"
-
 __attribute__((constructor)) static void disable_bod_early() {
   brownout_ll_bod_enable(false);
   brownout_ll_intr_enable(false);
 }
-#define USE_OLED 0
-
-#if USE_OLED
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Wire.h>
 #endif
-
 #include <ESP32Servo.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -212,50 +205,7 @@ SemaphoreHandle_t logMutex = NULL;
   } while (0)
 #endif
 
-#if USE_OLED
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SDA_PIN 20
-#define SCL_PIN 21
-
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-TaskHandle_t displayTaskHandle = NULL;
-#endif
-
 enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
-
-#if USE_OLED
-struct DisplayTelemetry {
-  char timeStr[32];
-  uint32_t uptimeSec;
-  float cpuTemp;
-  uint32_t cpuFreq;
-  FlightMode mode;
-  Protocol proto;
-  bool isConnected;
-  bool isArmed;
-  int leftServo;
-  int rightServo;
-  float offset;
-  char wifiIP[20];
-};
-
-DisplayTelemetry sharedTelem = {"2026-08-30 00:00:00",
-                                0,
-                                0.0f,
-                                160,
-                                FlightMode::INIT,
-                                Protocol::DETECT,
-                                false,
-                                false,
-                                90,
-                                90,
-                                0.0f,
-                                "0.0.0.0"};
-
-SemaphoreHandle_t telemMutex = NULL;
-#endif
 
 namespace SysMonitor {
 struct DateTime {
@@ -353,7 +303,8 @@ void setTime(int y, int mon, int d, int h, int m, int s) {
 
 void checkSerialTimeSync() {
   while (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
+    String input = Serial.readStringUntil('
+');
     input.trim();
     if (input.startsWith("SETTIME=")) {
       int y, mon, d, h, m, s;
@@ -377,7 +328,32 @@ float filteredTemp = 42.0f;
 bool tempFirstSample = true;
 
 float getCPUTemp() {
-  float currentRaw = temperatureRead();
+  float currentRaw = 42.0f;
+#if defined(HAS_NEW_TEMP_SENSOR) && HAS_NEW_TEMP_SENSOR
+  static temperature_sensor_handle_t temp_sensor = NULL;
+  static bool sensor_inited = false;
+  if (!sensor_inited) {
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&temp_sensor_config, &temp_sensor) == ESP_OK) {
+      if (temperature_sensor_enable(temp_sensor) == ESP_OK) {
+        sensor_inited = true;
+      }
+    }
+  }
+  if (sensor_inited) {
+    float ts_val = 0.0f;
+    if (temperature_sensor_get_celsius(temp_sensor, &ts_val) == ESP_OK) {
+      currentRaw = ts_val;
+    } else {
+      currentRaw = temperatureRead();
+    }
+  } else {
+    currentRaw = temperatureRead();
+  }
+#else
+  currentRaw = temperatureRead();
+#endif
+
   if (isnan(currentRaw) || currentRaw < 10.0f || currentRaw > 105.0f) {
     currentRaw = 42.0f;
   }
@@ -386,7 +362,6 @@ float getCPUTemp() {
     filteredTemp = currentRaw;
     tempFirstSample = false;
   } else {
-
     filteredTemp = (filteredTemp * 0.90f) + (currentRaw * 0.10f);
   }
   return filteredTemp;
@@ -412,159 +387,9 @@ void getAsciiWave(char *buffer, size_t len, float offset, float maxAmp) {
     }
   }
   buffer[width + 1] = ']';
-  buffer[width + 2] = '\0';
+  buffer[width + 2] = ' ';
 }
 }
-
-#if USE_OLED
-void vDisplayTask(void *pvParameters) {
-  float waveHistory[60] = {0};
-
-  for (;;) {
-    DisplayTelemetry localTelem = {};
-    bool dataOk = false;
-
-    if (telemMutex && xSemaphoreTake(telemMutex, pdMS_TO_TICKS(10))) {
-      localTelem = sharedTelem;
-      dataOk = true;
-      xSemaphoreGive(telemMutex);
-    }
-
-    if (dataOk) {
-
-      for (int i = 0; i < 59; i++) {
-        waveHistory[i] = waveHistory[i + 1];
-      }
-      waveHistory[59] = localTelem.offset;
-
-      display.clearDisplay();
-      display.setTextWrap(false);
-      display.setTextColor(SSD1306_WHITE);
-
-      display.setTextSize(1);
-
-      char shortTime[10] = "00:00:00";
-      if (strlen(localTelem.timeStr) >= 19) {
-        strncpy(shortTime, localTelem.timeStr + 11, 8);
-        shortTime[8] = '\0';
-      }
-      display.setCursor(0, 2);
-      display.print(shortTime);
-
-      display.setCursor(54, 2);
-      if (localTelem.proto == Protocol::WIFI) {
-        display.print(F("STA"));
-      } else if (localTelem.isConnected) {
-        if (localTelem.proto == Protocol::CRSF)
-          display.print(F("CRSF"));
-        else if (localTelem.proto == Protocol::SBUS)
-          display.print(F("SBUS"));
-        else
-          display.print(F("CONN"));
-      } else {
-        display.print(F("LOST"));
-      }
-
-      if (localTelem.isArmed) {
-        display.fillRect(96, 0, 32, 11, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK);
-        display.setCursor(102, 2);
-        display.print(F("FLY"));
-        display.setTextColor(SSD1306_WHITE);
-      } else {
-        display.drawRect(96, 0, 32, 11, SSD1306_WHITE);
-        display.setCursor(100, 2);
-        display.print(F("ARM?"));
-      }
-
-      display.drawFastHLine(0, 12, 128, SSD1306_WHITE);
-
-      char upBuf[12];
-      uint32_t s = localTelem.uptimeSec;
-      uint32_t h = s / 3600;
-      uint32_t m = (s % 3600) / 60;
-      uint32_t sec = s % 60;
-      if (h > 0) {
-        snprintf(upBuf, sizeof(upBuf), "%lu:%02lu:%02lu", h, m, sec);
-      } else {
-        snprintf(upBuf, sizeof(upBuf), "%02lu:%02lu", m, sec);
-      }
-      display.setCursor(0, 15);
-      display.print(F("UP:"));
-      display.print(upBuf);
-
-      display.setCursor(0, 25);
-      display.print(F("CPU:"));
-      display.print(localTelem.cpuFreq);
-      display.print(F("M"));
-
-      display.setCursor(0, 35);
-      display.print(F("TMP:"));
-      display.print(localTelem.cpuTemp, 1);
-      display.print(F("C"));
-
-      display.setCursor(0, 45);
-      display.print(F("S_L:"));
-      display.print(localTelem.leftServo);
-
-      display.setCursor(0, 55);
-      if (strlen(localTelem.wifiIP) > 1 &&
-          strcmp(localTelem.wifiIP, "0.0.0.0") != 0) {
-        display.print(localTelem.wifiIP);
-      } else {
-        display.print(F("S_R:"));
-        display.print(localTelem.rightServo);
-      }
-
-      display.drawFastVLine(62, 12, 52, SSD1306_WHITE);
-
-      int boxX = 66;
-      int boxY = 15;
-      int boxW = 60;
-      int boxH = 32;
-      display.drawRect(boxX, boxY, boxW, boxH, SSD1306_WHITE);
-
-      display.drawFastHLine(boxX + 1, boxY + boxH / 2, boxW - 2, SSD1306_WHITE);
-
-      int centerY = boxY + boxH / 2;
-      int prevX = -1;
-      int prevY = -1;
-      for (int i = 0; i < boxW; i++) {
-        int wx = boxX + i;
-        float val = waveHistory[i];
-
-        float scaled = (val / (float)Config::FLAP_AMP) * 13.0f;
-        int wy = centerY - (int)scaled;
-        wy = constrain(wy, boxY + 1, boxY + boxH - 2);
-
-        if (prevX != -1) {
-          display.drawLine(prevX, prevY, wx, wy, SSD1306_WHITE);
-        }
-        prevX = wx;
-        prevY = wy;
-      }
-
-      display.setCursor(66, 49);
-      if (localTelem.mode == FlightMode::FAILSAFE) {
-        display.print(F("FAILSAFE"));
-      } else if (localTelem.mode == FlightMode::PERCHING) {
-        display.print(F("PERCHING"));
-      } else {
-        display.print(F("OFF:"));
-        display.print((int)localTelem.offset);
-        if (localTelem.offset == 0 ||
-            localTelem.offset == Config::FAILSAFE_DIHEDRAL) {
-          display.print(F(" (GLD)"));
-        }
-      }
-
-      display.display();
-    }
-
-    vTaskDelay(localTelem.isArmed ? pdMS_TO_TICKS(500) : pdMS_TO_TICKS(100));
-  }
-}
-#endif
 
 namespace ServoSystem {
 
@@ -719,9 +544,14 @@ static const uint16_t PROGMEM atri_LUT[256] = {
     16270, 16334, 16384};
 
 void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
   if (state.phaseNeedsResync) {
     int32_t ratioScaled =
-        (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+        (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
     ratioScaled = constrain(ratioScaled, -1000, 1000);
 
     bool negate = (ratioScaled < 0);
@@ -739,11 +569,6 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phase = (uint16_t)signedPhase;
     state.phaseNeedsResync = false;
   }
-
-  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
-
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
 
   uint32_t speed = Config::FLAP_SPEED_MIN +
                    (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *
@@ -3041,37 +2866,7 @@ void setup() {
   pinMode(Config::LED_PIN, OUTPUT);
   digitalWrite(Config::LED_PIN, HIGH);
 
-#if USE_OLED
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("[ERROR] OLED Init Failed! Running in headless mode."));
-  } else {
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(16, 10);
-    display.println(F("PHELAN BUTTERFLY"));
-    display.drawFastHLine(16, 22, 96, SSD1306_WHITE);
-    display.setCursor(24, 28);
-    display.println(F("TELEMETRY SYSTEM"));
-    display.setCursor(20, 42);
-    display.println(F("INITIALIZING..."));
-    display.setCursor(24, 54);
-    display.printf("RST REASON: %d", (int)rstReason);
-    display.display();
-    delay(1000);
-
-    telemMutex = xSemaphoreCreateMutex();
-    if (telemMutex != NULL) {
-      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-      xTaskCreate(vDisplayTask, "OLED_Task", 4096, NULL, 1, &displayTaskHandle);
-    }
-  }
-#endif
-
-  Receiver::init(&rxSerial, NULL);
+Receiver::init(&rxSerial, NULL);
   xTaskCreate(vReceiverTask, "RX_Task", 4096, NULL, 5, &rxTaskHandle);
   Receiver::setNotifyTask(rxTaskHandle);
 
@@ -3162,30 +2957,7 @@ void loop() {
       emaSnapshot[Config::CH_YAW],
       flags);
 
-#if USE_OLED
-  if (telemMutex) {
-    if (xSemaphoreTake(telemMutex, pdMS_TO_TICKS(2))) {
-      char timeBuf[32];
-      SysMonitor::getFormattedTime(timeBuf, sizeof(timeBuf));
-      strcpy(sharedTelem.timeStr, timeBuf);
-      sharedTelem.uptimeSec = millis() / 1000;
-      sharedTelem.cpuTemp = SysMonitor::getCPUTemp();
-      sharedTelem.cpuFreq = SysMonitor::getCPUMhz();
-      sharedTelem.mode = Flight::state.mode;
-      sharedTelem.proto = snapProto;
-      sharedTelem.isConnected = snapshotConnected;
-      sharedTelem.isArmed = Flight::state.isArmed;
-      sharedTelem.leftServo = ServoSystem::state.lastPosL;
-      sharedTelem.rightServo = ServoSystem::state.lastPosR;
-      sharedTelem.offset = Flight::state.currentOffset;
-      strncpy(sharedTelem.wifiIP, WebControl::deviceIP,
-              sizeof(sharedTelem.wifiIP) - 1);
-      xSemaphoreGive(telemMutex);
-    }
-  }
-#endif
-
-  if (!snapshotConnected) {
+if (!snapshotConnected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
   } else {
     digitalWrite(Config::LED_PIN,

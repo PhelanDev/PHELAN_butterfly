@@ -15,8 +15,13 @@ static const uint16_t asin_LUT[256] = {
 };
 
 void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
+  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
+
+  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+
   if (state.phaseNeedsResync) {
-    int32_t ratioScaled = (int32_t)(state.currentOffset * 1000.0f / Config::FLAP_AMP);
+    int32_t ratioScaled = (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
     ratioScaled = constrain(ratioScaled, -1000, 1000);
 
     bool negate = (ratioScaled < 0);
@@ -34,11 +39,6 @@ void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
     state.phase = (uint16_t)signedPhase;
     state.phaseNeedsResync = false;
   }
-
-  throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
-
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
 
   uint32_t speed = Config::FLAP_SPEED_MIN +
                    (uint32_t)(throttle - Config::THROTTLE_IDLE_MAX) *

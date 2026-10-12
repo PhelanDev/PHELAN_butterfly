@@ -2,6 +2,16 @@
 #define CONFIG_H
 
 #include <Arduino.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#if __has_include(<hal/brownout_ll.h>)
+#include "hal/brownout_ll.h"
+__attribute__((constructor)) static void disable_bod_early() {
+  brownout_ll_bod_enable(false);
+  brownout_ll_intr_enable(false);
+}
+#endif
+
 
 enum class Protocol { DETECT, CRSF, SBUS };
 
