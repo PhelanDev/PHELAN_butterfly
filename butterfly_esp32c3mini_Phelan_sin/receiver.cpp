@@ -48,8 +48,12 @@ bool isValidSbusFooter(uint8_t footer) { return footer == 0x00; }
 
 uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
                              uint8_t payloadLen) {
+  if (!payload || payloadLen == 0)
+    return 0;
   uint16_t bitOffset = chIndex * 11;
   uint8_t byteOffset = bitOffset / 8;
+  if (byteOffset >= payloadLen)
+    return 0;
   uint8_t bitShift = bitOffset % 8;
   uint32_t val = payload[byteOffset];
   if (byteOffset + 1 < payloadLen) {
@@ -62,6 +66,8 @@ uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
 }
 
 void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
+  if (!payload || payload_len < 22)
+    return;
   if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
   state.crsfFailSafe = false;
   bool firstFrame = !state.hasFrame;

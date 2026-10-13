@@ -47,6 +47,10 @@ void update(int targetL, int targetR, bool bypassFilter) {
 
   targetL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
   targetR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
+  targetL =
+      constrain(targetL, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
+  targetR =
+      constrain(targetR, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
 
   if (abs(targetL - state.lastPosL) >= 2) {
     int outL = Config::REVERSE_SERVO_L ? (180 - targetL) : targetL;

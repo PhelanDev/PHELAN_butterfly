@@ -101,22 +101,40 @@ void setTime(int y, int mon, int d, int h, int m, int s) {
 }
 
 void checkSerialTimeSync() {
+  static char syncBuf[64];
+  static uint8_t syncIdx = 0;
+  static bool inOverflow = false;
+
   while (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    if (input.startsWith("SETTIME=")) {
-      int y, mon, d, h, m, s;
-      if (sscanf(input.substring(8).c_str(), "%d-%d-%d %d:%d:%d", &y, &mon, &d,
-                 &h, &m, &s) == 6) {
-        bootTime.year = y;
-        bootTime.month = mon;
-        bootTime.day = d;
-        bootTime.hour = h;
-        bootTime.minute = m;
-        bootTime.second = s;
-        bootMillis = millis();
-        Serial.println(
-            F("[INFO] System time synchronized successfully to Hanoi time!"));
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (!inOverflow && syncIdx > 0) {
+        syncBuf[syncIdx] = '\0';
+        if (strncmp(syncBuf, "SETTIME=", 8) == 0) {
+          int y, mon, d, h, m, s;
+          if (sscanf(syncBuf + 8, "%d-%d-%d %d:%d:%d", &y, &mon, &d, &h, &m,
+                     &s) == 6) {
+            bootTime.year = y;
+            bootTime.month = mon;
+            bootTime.day = d;
+            bootTime.hour = h;
+            bootTime.minute = m;
+            bootTime.second = s;
+            bootMillis = millis();
+            timeInitialized = true;
+            Serial.println(
+                F("[INFO] System time synchronized successfully to Hanoi time!"));
+          }
+        }
+      }
+      syncIdx = 0;
+      inOverflow = false;
+    } else if (!inOverflow) {
+      if (syncIdx < sizeof(syncBuf) - 1) {
+        syncBuf[syncIdx++] = c;
+      } else {
+        inOverflow = true;
+        syncIdx = 0;
       }
     }
   }
