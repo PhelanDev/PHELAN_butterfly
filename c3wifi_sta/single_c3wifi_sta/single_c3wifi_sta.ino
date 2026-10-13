@@ -700,7 +700,7 @@ html, body {
 <header class="header-bar">
   <div class="target-badge">
     <span class="target-label">ID:</span>
-    <b class="target-id-val" id="hdr-target-id">PHELAN-102</b>
+    <b class="target-id-val" id="hdr-target-id">PHELAN BUTTERFLY</b>
     <span class="badge-linked" id="hdr-link-state">DISCONNECTED</span>
   </div>
 
@@ -1311,6 +1311,11 @@ void parseCompileTime() {
 }
 
 void getFormattedTime(char *buffer, size_t len) {
+  if (!buffer || len == 0) return;
+  if (len < 20) {
+    buffer[0] = '\0';
+    return;
+  }
   if (!timeInitialized) {
     snprintf(buffer, len, "0000-00-00 00:00:00");
     return;

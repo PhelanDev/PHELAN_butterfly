@@ -136,7 +136,8 @@ void setup() {
   digitalWrite(Config::LED_PIN, HIGH);
 
 Receiver::init(&rxSerial, NULL);
-  xTaskCreate(vReceiverTask, "RX_Task", 4096, NULL, 5, &rxTaskHandle);
+  xTaskCreate(vReceiverTask, "RX_Task", 8192, NULL, configMAX_PRIORITIES - 2,
+              &rxTaskHandle);
   Receiver::setNotifyTask(rxTaskHandle);
 
   ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;

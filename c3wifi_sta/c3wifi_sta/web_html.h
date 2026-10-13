@@ -524,7 +524,7 @@ html, body {
 <header class="header-bar">
   <div class="target-badge">
     <span class="target-label">ID:</span>
-    <b class="target-id-val" id="hdr-target-id">PHELAN-102</b>
+    <b class="target-id-val" id="hdr-target-id">PHELAN BUTTERFLY</b>
     <span class="badge-linked" id="hdr-link-state">DISCONNECTED</span>
   </div>
 

@@ -248,6 +248,11 @@ void parseCompileTime() {
 }
 
 void getFormattedTime(char *buffer, size_t len) {
+  if (!buffer || len == 0) return;
+  if (len < 20) {
+    buffer[0] = '\0';
+    return;
+  }
   if (!timeInitialized) {
     snprintf(buffer, len, "0000-00-00 00:00:00");
     return;
@@ -2007,7 +2012,7 @@ html, body {
 <header class="header-bar">
   <div class="target-badge">
     <span class="target-label">ID:</span>
-    <b class="target-id-val" id="hdr-target-id">PHELAN-102</b>
+    <b class="target-id-val" id="hdr-target-id">PHELAN BUTTERFLY</b>
     <span class="badge-linked" id="hdr-link-state">DISCONNECTED</span>
   </div>
 
@@ -2850,8 +2855,10 @@ void setupWatchdog() {
 }
 
 void vReceiverTask(void *pvParameters) {
+  esp_task_wdt_add(NULL);
   for (;;) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+    esp_task_wdt_reset();
     Receiver::handleAutoDetect();
   }
 }
@@ -2872,7 +2879,8 @@ void setup() {
   digitalWrite(Config::LED_PIN, HIGH);
 
 Receiver::init(&rxSerial, NULL);
-  xTaskCreate(vReceiverTask, "RX_Task", 4096, NULL, 5, &rxTaskHandle);
+  xTaskCreate(vReceiverTask, "RX_Task", 8192, NULL, configMAX_PRIORITIES - 2,
+              &rxTaskHandle);
   Receiver::setNotifyTask(rxTaskHandle);
 
   ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;

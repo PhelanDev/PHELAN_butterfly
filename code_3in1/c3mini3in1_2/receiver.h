@@ -442,8 +442,10 @@ HardwareSerial rxSerial(1);
 TaskHandle_t rxTaskHandle = NULL;
 
 void vReceiverTask(void *pvParameters) {
+  esp_task_wdt_add(NULL);
   for (;;) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+    esp_task_wdt_reset();
     Receiver::handleAutoDetect();
   }
 }

@@ -238,6 +238,11 @@ void parseCompileTime() {
 }
 
 void getFormattedTime(char *buffer, size_t len) {
+  if (!buffer || len == 0) return;
+  if (len < 20) {
+    buffer[0] = '\0';
+    return;
+  }
   if (!timeInitialized) {
     snprintf(buffer, len, "0000-00-00 00:00:00");
     return;
