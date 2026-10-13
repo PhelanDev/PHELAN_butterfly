@@ -1433,6 +1433,11 @@ float getCPUTemp() {
 uint32_t getCPUMhz() { return getCpuFrequencyMhz(); }
 
 void getAsciiWave(char *buffer, size_t len, float offset, float maxAmp) {
+  if (!buffer || len == 0) return;
+  if (len < 23) {
+    buffer[0] = '\0';
+    return;
+  }
   int width = 20;
   if (maxAmp <= 0)
     maxAmp = 1.0f;
@@ -1450,7 +1455,7 @@ void getAsciiWave(char *buffer, size_t len, float offset, float maxAmp) {
     }
   }
   buffer[width + 1] = ']';
-  buffer[width + 2] = ' ';
+  buffer[width + 2] = '\0';
 }
 }
 

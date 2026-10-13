@@ -46,7 +46,9 @@ scratch/
 
 # History & Changelog & Reports (Local only)
 His.md
-his.md
 CHANGELOG.md
 plans/
+tests/
+test/
+*.exe
 
