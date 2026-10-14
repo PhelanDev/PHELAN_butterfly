@@ -80,8 +80,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
           constrain(1000 + (int16_t)pkt->throttle * 10, 1000, 2000);
       webChannels[Config::CH_YAW] =
           constrain(1500 + (int16_t)pkt->yaw * 5, 1000, 2000);
-      webChannels[Config::CH_ELEVATOR] =
-          constrain(1500 + (int16_t)pkt->pitch * 5, 1000, 2000);
+
+      bool webPerchActive = (pkt->flags & 0x04) != 0;
+      if (webPerchActive && webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX) {
+        webChannels[Config::CH_ELEVATOR] = Config::CH_MIN;
+      } else {
+        webChannels[Config::CH_ELEVATOR] =
+            constrain(1500 + (int16_t)pkt->pitch * 5, 1000, 2000);
+      }
+
       webChannels[Config::CH_STEERING] =
           constrain(1500 + (int16_t)pkt->roll * 5, 1000, 2000);
 
