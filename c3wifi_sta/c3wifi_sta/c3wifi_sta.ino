@@ -126,6 +126,7 @@ void setup() {
 
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("[BOOT] Reset reason: %d\n", rstReason);
+  setupWatchdog();
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
@@ -146,7 +147,6 @@ ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
 
   xTaskCreatePinnedToCore(flightCoreTask, "flightCore", 4096, NULL, 5, NULL, 0);
 
-  setupWatchdog();
   esp_task_wdt_reset();
 }
 

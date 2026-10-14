@@ -31,6 +31,7 @@ volatile LinkState currentLinkState = LinkState::LOST;
 constexpr unsigned long WS_FAILSAFE_MS = 500;
 constexpr unsigned long TELEM_INTERVAL_MS = 300;
 
+static bool wasWebPerchActive = false;
 int16_t webChannels[16] = {1500, 1500, 1000, 1500, 1000, 1500, 1500, 1500,
                            1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
 
@@ -43,6 +44,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     }
   } else if (type == WS_EVT_DISCONNECT) {
     LOG_INFO("WebSocket client #%u disconnected", client->id());
+    wasWebPerchActive = false;
   } else if (type == WS_EVT_DATA) {
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->opcode == WS_BINARY && len == sizeof(FlightPacket) &&
@@ -59,10 +61,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       bool webPerchActive = (pkt->flags & 0x04) != 0;
       if (webPerchActive && webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX) {
         webChannels[Config::CH_ELEVATOR] = Config::CH_MIN;
+      } else if (!webPerchActive && wasWebPerchActive && pkt->pitch == 0 &&
+                 webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX) {
+        webChannels[Config::CH_ELEVATOR] = Config::PERCH_EXIT_ELEV + 50;
       } else {
         webChannels[Config::CH_ELEVATOR] =
             constrain(1500 + (int16_t)pkt->pitch * 5, 1000, 2000);
       }
+      wasWebPerchActive = webPerchActive;
 
       webChannels[Config::CH_STEERING] =
           constrain(1500 + (int16_t)pkt->roll * 5, 1000, 2000);

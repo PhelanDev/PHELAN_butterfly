@@ -2610,6 +2610,8 @@ window.addEventListener('DOMContentLoaded', () => {
 </html>
 )rawhtml";
 
+static bool wasWebPerchActive = false;
+
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
                AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
@@ -2627,6 +2629,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     if (ws.count() == 0) {
       idVerified = true;
       webControlEnabled = false;
+      wasWebPerchActive = false;
     }
   } else if (type == WS_EVT_DATA) {
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
@@ -2646,10 +2649,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       bool webPerchActive = (pkt->flags & 0x04) != 0;
       if (webPerchActive && webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX) {
         webChannels[Config::CH_ELEVATOR] = Config::CH_MIN;
+      } else if (!webPerchActive && wasWebPerchActive && pkt->pitch == 0 &&
+                 webChannels[Config::CH_THROTTLE] < Config::THROTTLE_IDLE_MAX) {
+        webChannels[Config::CH_ELEVATOR] = Config::PERCH_EXIT_ELEV + 50;
       } else {
         webChannels[Config::CH_ELEVATOR] =
             constrain(1500 + (int16_t)pkt->pitch * 5, 1000, 2000);
       }
+      wasWebPerchActive = webPerchActive;
 
       webChannels[Config::CH_STEERING] =
           constrain(1500 + (int16_t)pkt->roll * 5, 1000, 2000);
@@ -2906,6 +2913,7 @@ void setup() {
 
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("[BOOT] Reset reason: %d\n", rstReason);
+  setupWatchdog();
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
@@ -2931,7 +2939,6 @@ Receiver::init(&rxSerial, NULL);
 
   xTaskCreatePinnedToCore(flightCoreTask, "flightCore", 4096, NULL, 5, NULL, 0);
 
-  setupWatchdog();
   esp_task_wdt_reset();
 }
 
