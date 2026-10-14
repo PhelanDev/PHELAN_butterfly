@@ -69,8 +69,8 @@ The repository provides **12 ready-to-flash firmware options** categorized into 
 1. Install **Arduino IDE** (v2.x recommended).
 2. Install the **ESP32** board package by Espressif (`v3.0.x` or later).
 3. Required external libraries:
-   - `ESP32Servo`
-   - `ESPAsyncWebServer` & `AsyncTCP` *(Only needed for modular compilation; single-file sketches compile directly)*.
+   - `ESP32Servo` (Required for all firmware variants).
+   - `ESPAsyncWebServer` & `AsyncTCP` (Required for all 8 firmware variants with Web GCS, including both modular and single-file sketches; pure RC Sine/Triangle variants do not require these).
 4. Select Board: `ESP32C3 Dev Module` (or `ESP32C6 Dev Module`).
    - **Flash Frequency**: `80MHz`
    - **Flash Size**: `4MB`

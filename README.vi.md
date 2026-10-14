@@ -70,8 +70,8 @@ Toàn bộ dự án có **12 bản firmware** chia làm 6 nhánh tính năng, m�
 2. Thêm gói board ESP32 trong *Preferences* -> *Additional boards manager URLs*:
    `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
 3. Cài đặt các thư viện cần thiết trong *Library Manager*:
-   - `ESP32Servo`
-   - `ESPAsyncWebServer` & `AsyncTCP` *(nếu nạp bản cấu trúc chia module; các bản single-file biên dịch trực tiếp không cần thư viện ngoài)*.
+   - `ESP32Servo` (Bắt buộc cho toàn bộ 12 bản firmware).
+   - `ESPAsyncWebServer` & `AsyncTCP` (Bắt buộc cho toàn bộ 8 bản firmware có Web GCS, bao gồm cả bản chia module và bản gộp single-file; các bản thuần RC Sóng Sin/Tam Giác không cần hai thư viện này).
 4. Cấu hình nạp trong menu **Tools**:
    - **Board**: `ESP32C3 Dev Module` (hoặc `ESP32C6 Dev Module`).
    - **Flash Frequency**: `80MHz`.
