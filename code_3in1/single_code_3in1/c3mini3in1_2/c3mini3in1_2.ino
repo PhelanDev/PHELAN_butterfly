@@ -1159,7 +1159,6 @@ void enablePassthrough() {
 
   rxSerial.onReceive(NULL);
   Receiver::resetParsers();
-  ServoSystem::detachAll();
 
   tcpBridgeServer.begin();
   LOG_WARN("WiFi UART Bridge ENABLED on port 8880");
@@ -2946,6 +2945,8 @@ void loop() {
   WebControl::handle();
 
   if (isPassthroughMode) {
+    publishControlSnapshot(Config::CH_CENTER, Config::CH_CENTER,
+                           Config::CH_MIN, Config::CH_CENTER, 0x02);
     handleSerialBridge();
     delay(1);
     return;

@@ -169,6 +169,8 @@ void loop() {
   WebControl::handle();
 
   if (isPassthroughMode) {
+    publishControlSnapshot(Config::CH_CENTER, Config::CH_CENTER,
+                           Config::CH_MIN, Config::CH_CENTER, 0x02);
     handleSerialBridge();
     delay(1);
     return;

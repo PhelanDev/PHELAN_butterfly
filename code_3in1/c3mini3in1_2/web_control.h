@@ -12,7 +12,6 @@ void enablePassthrough() {
 
   rxSerial.onReceive(NULL);
   Receiver::resetParsers();
-  ServoSystem::detachAll();
 
   tcpBridgeServer.begin();
   LOG_WARN("WiFi UART Bridge ENABLED on port 8880");
