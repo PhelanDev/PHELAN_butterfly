@@ -47,11 +47,20 @@ inline ControlSnapshot readControlSnapshot() {
 }
 
 void flightCoreTask(void *pvParameters) {
+  esp_task_wdt_add(NULL);
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(3);
+  unsigned long lastUs = micros();
 
   for (;;) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    esp_task_wdt_reset();
+
+    unsigned long nowUs = micros();
+    unsigned long dt_us = nowUs - lastUs;
+    if (dt_us == 0 || dt_us > 100000)
+      dt_us = Config::LOOP_DT_US;
+    lastUs = nowUs;
 
     ControlSnapshot cmd = readControlSnapshot();
     bool isConnected = (cmd.flags & 0x01) != 0;
@@ -107,7 +116,7 @@ void flightCoreTask(void *pvParameters) {
         }
       }
 
-      processFlightLogic(Config::LOOP_DT_US, cmd.ch[0], cmd.ch[1], cmd.ch[2],
+      processFlightLogic(dt_us, cmd.ch[0], cmd.ch[1], cmd.ch[2],
                          cmd.ch[3], isConnected);
     }
   }

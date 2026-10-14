@@ -1929,12 +1929,14 @@ inline ControlSnapshot readControlSnapshot() {
 }
 
 void flightCoreTask(void *pvParameters) {
+  esp_task_wdt_add(NULL);
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(3);
   unsigned long lastUs = micros();
 
   for (;;) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    esp_task_wdt_reset();
 
     unsigned long nowUs = micros();
     unsigned long dt_us = nowUs - lastUs;
