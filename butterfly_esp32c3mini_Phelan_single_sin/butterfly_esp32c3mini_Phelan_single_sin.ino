@@ -478,7 +478,6 @@ struct State {
                            1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
 
   bool hasFrame = false;
-  bool isConnected = false;
   unsigned long lastTime = 0;
   unsigned long lastByteTimeCrsf = 0;
   unsigned long lastByteTimeSbus = 0;
@@ -627,9 +626,18 @@ void syncFilterCache() {
   }
 }
 
-void updateFilters() {
-  if (rxMutex)
-    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+struct RcFrame {
+  int16_t ch[4] = {1500, 1500, 1500, 1500};   // steering, elevator, throttle, yaw
+  int16_t kill = 1500;
+  bool connected = false;
+  Protocol proto = Protocol::DETECT;
+};
+
+bool pollChannels(unsigned long nowMs, RcFrame &out) {
+  if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
+    return false;
+  }
+
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
     if (diff != 0) {
@@ -639,20 +647,28 @@ void updateFilters() {
       }
     }
   }
-  if (rxMutex)
-    xSemaphoreGiveRecursive(rxMutex);
-}
 
-int16_t getFiltered(byte ch) {
-  if (ch >= 16)
-    return Config::CH_CENTER;
-  int16_t val;
-  if (rxMutex)
-    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
-  val = state.emaValues[ch];
-  if (rxMutex)
-    xSemaphoreGiveRecursive(rxMutex);
-  return val;
+  bool protocolReady = !Config::USE_AUTO_DETECT || state.isLocked;
+  bool rawConnected = protocolReady && state.hasFrame &&
+                      (nowMs - state.lastTime < Config::RX_TIMEOUT_MS);
+  if (state.currentProto == Protocol::SBUS &&
+      (state.sbusFailSafe || state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
+    rawConnected = false;
+  }
+  if (state.currentProto == Protocol::CRSF && state.crsfFailSafe) {
+    rawConnected = false;
+  }
+
+  out.connected = rawConnected;
+  out.ch[0] = state.emaValues[Config::CH_STEERING];
+  out.ch[1] = state.emaValues[Config::CH_ELEVATOR];
+  out.ch[2] = state.emaValues[Config::CH_THROTTLE];
+  out.ch[3] = state.emaValues[Config::CH_YAW];
+  out.kill = state.emaValues[Config::CH_KILL_SWITCH];
+  out.proto = state.currentProto;
+
+  xSemaphoreGiveRecursive(rxMutex);
+  return true;
 }
 
 bool readCrsf() {
@@ -1085,35 +1101,14 @@ void vReceiverTask(void *pvParameters) {
   }
 }
 
-#include <atomic>
-
-struct alignas(4) ControlSnapshot {
-  int16_t ch[4];
-  uint8_t flags;
-};
-
-static ControlSnapshot g_cmd_buffer[2];
-static std::atomic<uint8_t> g_cmd_index{0};
-
-inline void publishControlSnapshot(int16_t roll, int16_t pitch, int16_t throttle, int16_t yaw, uint8_t flags) {
-  uint8_t next = 1 - g_cmd_index.load(std::memory_order_relaxed);
-  g_cmd_buffer[next].ch[0] = roll;
-  g_cmd_buffer[next].ch[1] = pitch;
-  g_cmd_buffer[next].ch[2] = throttle;
-  g_cmd_buffer[next].ch[3] = yaw;
-  g_cmd_buffer[next].flags = flags;
-  g_cmd_index.store(next, std::memory_order_release);
-}
-
-inline ControlSnapshot readControlSnapshot() {
-  return g_cmd_buffer[g_cmd_index.load(std::memory_order_acquire)];
-}
+static Receiver::RcFrame g_latestRc;
 
 void flightCoreTask(void *pvParameters) {
   esp_task_wdt_add(NULL);
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(3);
   unsigned long lastUs = micros();
+  static Receiver::RcFrame rc;
 
   for (;;) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -1125,9 +1120,10 @@ void flightCoreTask(void *pvParameters) {
       dt_us = Config::LOOP_DT_US;
     lastUs = nowUs;
 
-    ControlSnapshot cmd = readControlSnapshot();
-    bool isConnected = (cmd.flags & 0x01) != 0;
-    bool killActive = (cmd.flags & 0x02) != 0;
+    Receiver::pollChannels(millis(), rc);
+    g_latestRc = rc;
+
+    bool killActive = rc.kill > Config::KILL_SWITCH_THRESHOLD;
 
     static uint8_t killDebounce = 0;
     if (killActive) {
@@ -1150,8 +1146,8 @@ void flightCoreTask(void *pvParameters) {
       Flight::state.failsafeEnterMs = 0;
       ServoSystem::detachAll();
     } else {
-      processFlightLogic(dt_us, cmd.ch[0], cmd.ch[1], cmd.ch[2],
-                         cmd.ch[3], isConnected);
+      processFlightLogic(dt_us, rc.ch[0], rc.ch[1], rc.ch[2],
+                         rc.ch[3], rc.connected);
     }
   }
 }
@@ -1183,52 +1179,12 @@ void setup() {
 }
 
 void loop() {
-  static bool snapshotConnected = false;
-  static Protocol snapProto = Protocol::DETECT;
-  static int16_t emaSnapshot[16] = {1500, 1500, 1500, 1500, 1500, 1500,
-                                    1500, 1500, 1500, 1500, 1500, 1500,
-                                    1500, 1500, 1500, 1500};
-
   esp_task_wdt_reset();
 
   unsigned long currentMillis = millis();
 
-  Receiver::updateFilters();
-
-  if (Receiver::rxMutex) {
-    if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
-      bool protocolReady =
-          !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
-
-      bool rawConnected =
-          protocolReady && Receiver::state.hasFrame &&
-          (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
-      if (Receiver::state.currentProto == Protocol::SBUS &&
-          (Receiver::state.sbusFailSafe ||
-           Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
-        rawConnected = false;
-      }
-      if (Receiver::state.currentProto == Protocol::CRSF &&
-          Receiver::state.crsfFailSafe) {
-        rawConnected = false;
-      }
-      Receiver::state.isConnected = rawConnected;
-      snapshotConnected = rawConnected;
-      snapProto = Receiver::state.currentProto;
-      memcpy(emaSnapshot, Receiver::state.emaValues, sizeof(emaSnapshot));
-      xSemaphoreGiveRecursive(Receiver::rxMutex);
-    }
-  }
-
-  bool killActive =
-      emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
-
-  uint8_t flags = (snapshotConnected ? 0x01 : 0x00) | (killActive ? 0x02 : 0x00);
-  publishControlSnapshot(emaSnapshot[Config::CH_STEERING],
-                         emaSnapshot[Config::CH_ELEVATOR],
-                         emaSnapshot[Config::CH_THROTTLE],
-                         emaSnapshot[Config::CH_YAW],
-                         flags);
+  bool snapshotConnected = g_latestRc.connected;
+  Protocol snapProto = g_latestRc.proto;
 
   if (!snapshotConnected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
@@ -1254,13 +1210,13 @@ void loop() {
         else
           Serial.print(F("DETC "));
         Serial.print(F("CH3:"));
-        Serial.print(emaSnapshot[2]);
+        Serial.print(g_latestRc.ch[2]);
         Serial.print(F(" Off:"));
         Serial.print((int)Flight::state.currentOffset);
         Serial.print(F(" SVO:"));
         Serial.print(ServoSystem::state.isAttached ? F("OK") : F("DET"));
         Serial.print(F(" LED:"));
-        Serial.print(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
+        Serial.println(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
       } else {
         Serial.println(F("[WARN] NO SIGNAL or DETECTING..."));
       }
