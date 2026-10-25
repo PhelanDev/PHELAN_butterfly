@@ -1,6 +1,3 @@
-#if __has_include(<esp_arduino_version.h>)
-#include <esp_arduino_version.h>
-#endif
 #include <Arduino.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
@@ -12,16 +9,14 @@ __attribute__((constructor)) static void disable_bod_early() {
 }
 #endif
 
-#include <ESP32Servo.h>
 #include <esp_task_wdt.h>
+#if __has_include(<esp_arduino_version.h>)
+#include <esp_arduino_version.h>
+#endif
+#include <ESP32Servo.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
-
-#ifndef CONFIG_H
-#define CONFIG_H
-
-#include <Arduino.h>
 
 enum class Protocol { DETECT, CRSF, SBUS };
 
@@ -116,17 +111,19 @@ inline int mapTrim15(int x) {
 
 #define CURRENT_LOG_LEVEL LOG_LEVEL_WARN
 
-extern SemaphoreHandle_t logMutex;
+SemaphoreHandle_t logMutex = NULL;
 
 #define SAFE_LOG(level, fmt, ...)                                              \
   do {                                                                         \
-    if (logMutex) xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);            \
+    if (logMutex)                                                              \
+      xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);                        \
     if (Serial.availableForWrite() >= 64) {                                    \
       Serial.print(level);                                                     \
       Serial.printf(fmt, ##__VA_ARGS__);                                       \
       Serial.println();                                                        \
     }                                                                          \
-    if (logMutex) xSemaphoreGiveRecursive(logMutex);                           \
+    if (logMutex)                                                              \
+      xSemaphoreGiveRecursive(logMutex);                                       \
   } while (0)
 
 #if CURRENT_LOG_LEVEL >= LOG_LEVEL_DEBUG
@@ -161,14 +158,6 @@ extern SemaphoreHandle_t logMutex;
   } while (0)
 #endif
 
-#endif
-
-#ifndef SERVO_SYS_H
-#define SERVO_SYS_H
-
-#include <Arduino.h>
-#include <ESP32Servo.h>
-
 namespace ServoSystem {
 
 struct Control {
@@ -183,120 +172,6 @@ struct Control {
   bool isAttached = false;
 };
 
-extern Control state;
-
-void attachAll();
-void detachAll();
-void update(int targetL, int targetR, bool bypassFilter = false);
-}
-#endif
-
-#ifndef FLIGHT_H
-#define FLIGHT_H
-
-#include <Arduino.h>
-
-enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
-
-namespace Flight {
-
-struct State {
-  FlightMode mode = FlightMode::INIT;
-
-  uint16_t phase = 0;
-  float currentOffset = 0.0f;
-
-  bool isPerching = false;
-  int perchAngleLevel = Config::CH_MIN;
-  bool phaseNeedsResync = true;
-  bool isFlapUp = true;
-  unsigned long failsafeEnterMs = 0;
-
-  bool wasFlapping = false;
-  bool wasPerching = false;
-  bool isFlapping = false;
-
-  bool isArmed = false;
-  unsigned long armStartTime = 0;
-  unsigned long disarmStartTime = 0;
-};
-
-extern State state;
-
-void updateCurrentOffsetSine(int throttle, unsigned long dt_us);
-void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us);
-void updateCurrentOffsetGlide(unsigned long dt_us);
-void processFailsafe(unsigned long dt_us);
-
-}
-#endif
-
-#ifndef RECEIVER_H
-#define RECEIVER_H
-
-#include <Arduino.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
-
-namespace Receiver {
-
-struct State {
-  Protocol currentProto = Protocol::DETECT;
-  Protocol trialProto = Protocol::CRSF;
-  unsigned long lastProtoSwitchTime = 0;
-  bool isLocked = false;
-  uint8_t validFramesCount = 0;
-
-  uint8_t crsfBuffer[65];
-  uint8_t crsfIndex = 0;
-  uint8_t crsfLength = 0;
-  uint16_t crsfCrcErrors = 0;
-  bool crsfFailSafe = false;
-
-  uint8_t sbusBuffer[25];
-  uint8_t sbusIndex = 0;
-  bool sbusFailSafe = false;
-  bool sbusFrameLost = false;
-  uint8_t sbusLostFrames = 0;
-
-  int16_t chMicros_cache[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
-                                1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
-  int16_t emaValues[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
-                           1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
-
-  bool hasFrame = false;
-  bool isConnected = false;
-  unsigned long lastTime = 0;
-  unsigned long lastByteTimeCrsf = 0;
-  unsigned long lastByteTimeSbus = 0;
-  unsigned long switchDelayStart = 0;
-  HardwareSerial *serialPort = nullptr;
-};
-
-extern State state;
-extern SemaphoreHandle_t rxMutex;
-
-void init(HardwareSerial *serial, TaskHandle_t taskToNotify = NULL);
-void resetParsers();
-void syncFilterCache();
-void updateFilters();
-int16_t getFiltered(byte ch);
-
-bool readCrsf();
-bool readSbus();
-
-void switchProtocol();
-void detectProtocol();
-void lockReceiver();
-void handleAutoDetect();
-
-}
-
-#endif
-
-namespace ServoSystem {
-
 Control state;
 
 void attachAll() {
@@ -305,8 +180,10 @@ void attachAll() {
     state.right.setPeriodHertz(Config::SERVO_HZ);
     state.left.attach(Config::SERVO_L_PIN, 500, 2500);
     state.right.attach(Config::SERVO_R_PIN, 500, 2500);
-    int outL = Config::REVERSE_SERVO_L ? (180 - state.lastPosL) : state.lastPosL;
-    int outR = Config::REVERSE_SERVO_R ? (180 - state.lastPosR) : state.lastPosR;
+    int outL =
+        Config::REVERSE_SERVO_L ? (180 - state.lastPosL) : state.lastPosL;
+    int outR =
+        Config::REVERSE_SERVO_R ? (180 - state.lastPosR) : state.lastPosR;
     state.left.write(outL);
     state.right.write(outR);
     state.filteredL = (int32_t)state.lastPosL << Config::SERVO_EMA_ALPHA_SHIFT;
@@ -323,7 +200,7 @@ void detachAll() {
   }
 }
 
-void update(int targetL, int targetR, bool bypassFilter) {
+void update(int targetL, int targetR, bool bypassFilter = false) {
   if (!state.isAttached)
     return;
   targetL =
@@ -362,7 +239,30 @@ void update(int targetL, int targetR, bool bypassFilter) {
 
 }
 
+enum class FlightMode { INIT, CONNECTED, PERCHING, FAILSAFE };
+
 namespace Flight {
+
+struct State {
+  FlightMode mode = FlightMode::INIT;
+
+  uint16_t phase = 0;
+  float currentOffset = 0.0f;
+
+  bool isPerching = false;
+  int perchAngleLevel = Config::CH_MIN;
+  bool phaseNeedsResync = true;
+  bool isFlapUp = true;
+  unsigned long failsafeEnterMs = 0;
+
+  bool wasFlapping = false;
+  bool wasPerching = false;
+  bool isFlapping = false;
+
+  bool isArmed = false;
+  unsigned long armStartTime = 0;
+  unsigned long disarmStartTime = 0;
+};
 
 State state;
 
@@ -545,6 +445,39 @@ void processFailsafe(unsigned long dt_us) {
 
 namespace Receiver {
 
+struct State {
+  Protocol currentProto = Protocol::DETECT;
+  Protocol trialProto = Protocol::CRSF;
+  unsigned long lastProtoSwitchTime = 0;
+  bool isLocked = false;
+  uint8_t validFramesCount = 0;
+
+  uint8_t crsfBuffer[65];
+  uint8_t crsfIndex = 0;
+  uint8_t crsfLength = 0;
+  uint16_t crsfCrcErrors = 0;
+  bool crsfFailSafe = false;
+
+  uint8_t sbusBuffer[25];
+  uint8_t sbusIndex = 0;
+  bool sbusFailSafe = false;
+  bool sbusFrameLost = false;
+  uint8_t sbusLostFrames = 0;
+
+  int16_t chMicros_cache[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
+                                1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
+  int16_t emaValues[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
+                           1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
+
+  bool hasFrame = false;
+  bool isConnected = false;
+  unsigned long lastTime = 0;
+  unsigned long lastByteTimeCrsf = 0;
+  unsigned long lastByteTimeSbus = 0;
+  unsigned long switchDelayStart = 0;
+  HardwareSerial *serialPort = nullptr;
+};
+
 State state;
 SemaphoreHandle_t rxMutex = NULL;
 static TaskHandle_t rxNotifyTaskHandle = NULL;
@@ -607,6 +540,8 @@ uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
   }
   return (val >> bitShift) & 0x07FF;
 }
+
+void syncFilterCache();
 
 void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
   if (!payload || payload_len < 22)
@@ -946,12 +881,8 @@ void init(HardwareSerial *serial, TaskHandle_t taskToNotify) {
 
 }
 
-#include <Arduino.h>
-#include <esp_task_wdt.h>
-
 HardwareSerial rxSerial(1);
 TaskHandle_t rxTaskHandle = NULL;
-SemaphoreHandle_t logMutex = NULL;
 
 void handleFailsafeMode(unsigned long dt_us, bool connected,
                         unsigned long currentMillis) {
@@ -1265,14 +1196,15 @@ void loop() {
 
   if (Receiver::rxMutex) {
     if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
-      bool protocolReady = !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
+      bool protocolReady =
+          !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
 
       bool rawConnected =
           protocolReady && Receiver::state.hasFrame &&
           (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
       if (Receiver::state.currentProto == Protocol::SBUS &&
           (Receiver::state.sbusFailSafe ||
-             Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
+           Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
         rawConnected = false;
       }
       if (Receiver::state.currentProto == Protocol::CRSF &&
@@ -1287,7 +1219,8 @@ void loop() {
     }
   }
 
-  bool killActive = emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
+  bool killActive =
+      emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
 
   uint8_t flags = (snapshotConnected ? 0x01 : 0x00) | (killActive ? 0x02 : 0x00);
   publishControlSnapshot(emaSnapshot[Config::CH_STEERING],
@@ -1308,9 +1241,8 @@ void loop() {
   static unsigned long lastLogTime = 0;
   if (currentMillis - lastLogTime >= 1000) {
     lastLogTime = currentMillis;
-
-    if (logMutex) xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
-
+    if (logMutex)
+      xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
     if (Serial.availableForWrite() >= 64) {
       if (snapshotConnected) {
         Serial.print(Flight::state.isArmed ? F("[FLY] ") : F("[ARM?] "));
@@ -1327,12 +1259,13 @@ void loop() {
         Serial.print(F(" SVO:"));
         Serial.print(ServoSystem::state.isAttached ? F("OK") : F("DET"));
         Serial.print(F(" LED:"));
-        Serial.println(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
+        Serial.print(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
       } else {
         Serial.println(F("[WARN] NO SIGNAL or DETECTING..."));
       }
     }
-    if (logMutex) xSemaphoreGiveRecursive(logMutex);
+    if (logMutex)
+      xSemaphoreGiveRecursive(logMutex);
   }
 
   delay(2);
