@@ -56,7 +56,8 @@ constexpr bool USE_AUTO_DETECT = true;
 constexpr Protocol FIXED_PROTOCOL = Protocol::CRSF;
 
 constexpr unsigned long LOOP_DT_US = 3333;
-constexpr int FLAP_AMP = 65;
+constexpr float FLAP_AMP_IDLE = 55.0f;
+constexpr float FLAP_AMP_MAX_THR = 35.0f;
 constexpr uint32_t FLAP_SPEED_MIN = 157286;
 constexpr uint32_t FLAP_SPEED_MAX = 262144;
 constexpr int PERCH_MULT = 31;
@@ -324,29 +325,62 @@ static const uint16_t asin_LUT[256] = {
     13039, 13171, 13309, 13453, 13605, 13764, 13934, 14117, 14315, 14534, 14782,
     15077, 15460, 16384};
 
+inline bool isRisingPhase(uint16_t phase) {
+  return (uint16_t)(phase + 16384) < 32768;
+}
+
+uint16_t sinPhaseFromOffset(float offset, float amp, bool flapUp) {
+  if (amp <= 0.0f) return 0;
+  int32_t ratioScaled = (int32_t)(offset * 1000.0f / amp);
+  ratioScaled = constrain(ratioScaled, -1000, 1000);
+
+  bool negate = (ratioScaled < 0);
+  int32_t abs_ratio = negate ? -ratioScaled : ratioScaled;
+
+  int index = (abs_ratio * 255) / 1000;
+  uint16_t approxPhase = asin_LUT[index];
+
+  int32_t signedPhase = negate ? -approxPhase : approxPhase;
+
+  if (!flapUp) {
+    signedPhase = 32768 - signedPhase;
+  }
+
+  return (uint16_t)signedPhase;
+}
+
+void slewOffsetTo(float target, unsigned long dt_us) {
+  if (dt_us == 0) {
+    if (target > state.currentOffset) state.isFlapUp = true;
+    else if (target < state.currentOffset) state.isFlapUp = false;
+    state.currentOffset = target;
+    return;
+  }
+  float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
+  if (state.currentOffset < target) {
+    state.isFlapUp = true;
+    state.currentOffset += step;
+    if (state.currentOffset > target) {
+      state.currentOffset = target;
+    }
+  } else if (state.currentOffset > target) {
+    state.isFlapUp = false;
+    state.currentOffset -= step;
+    if (state.currentOffset < target) {
+      state.currentOffset = target;
+    }
+  }
+}
+
 void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
   throttle = constrain(throttle, Config::THROTTLE_IDLE_MAX, Config::CH_MAX);
 
-  float dynamicAmp = 55.0f - ((float)(throttle - Config::THROTTLE_IDLE_MAX) /
-                              (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX)) * 20.0f;
+  float ratio = (float)(throttle - Config::THROTTLE_IDLE_MAX) /
+                (float)(Config::CH_MAX - Config::THROTTLE_IDLE_MAX);
+  float dynamicAmp = Config::FLAP_AMP_IDLE - ratio * (Config::FLAP_AMP_IDLE - Config::FLAP_AMP_MAX_THR);
 
   if (state.phaseNeedsResync) {
-    int32_t ratioScaled = (int32_t)(state.currentOffset * 1000.0f / dynamicAmp);
-    ratioScaled = constrain(ratioScaled, -1000, 1000);
-
-    bool negate = (ratioScaled < 0);
-    int32_t abs_ratio = negate ? -ratioScaled : ratioScaled;
-
-    int index = (abs_ratio * 255) / 1000;
-    uint16_t approxPhase = asin_LUT[index];
-
-    int32_t signedPhase = negate ? -approxPhase : approxPhase;
-
-    if (!state.isFlapUp) {
-      signedPhase = 32768 - signedPhase;
-    }
-
-    state.phase = (uint16_t)signedPhase;
+    state.phase = sinPhaseFromOffset(state.currentOffset, dynamicAmp, state.isFlapUp);
     state.phaseNeedsResync = false;
   }
 
@@ -360,16 +394,9 @@ void updateCurrentOffsetSine(int throttle, unsigned long dt_us) {
     state.phase += phaseDelta;
   }
 
-  float oldOffset = state.currentOffset;
+  state.isFlapUp = isRisingPhase(state.phase);
   state.currentOffset =
       ((float)sin_LUT[state.phase >> 8] * dynamicAmp) / 1000.0f;
-
-  float delta = state.currentOffset - oldOffset;
-  if (delta > 0.1f) {
-    state.isFlapUp = true;
-  } else if (delta < -0.1f) {
-    state.isFlapUp = false;
-  }
 }
 
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
@@ -382,35 +409,11 @@ void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
   constexpr float maxOffset = Config::SERVO_MAX_ANGLE - ServoSystem::Control::centerAngle - Config::PERCH_HEADROOM_DEG;
   float target = constrain(maxUpAngle, 0.0f, maxOffset);
 
-  if (dt_us > 0) {
-    float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
-    if (state.currentOffset < target) {
-      state.currentOffset += step;
-      if (state.currentOffset > target) state.currentOffset = target;
-    } else if (state.currentOffset > target) {
-      state.currentOffset -= step;
-      if (state.currentOffset < target) state.currentOffset = target;
-    }
-  } else {
-    state.currentOffset = target;
-  }
+  slewOffsetTo(target, dt_us);
 }
 
 void updateCurrentOffsetGlide(unsigned long dt_us) {
-  if (state.currentOffset == 0)
-    return;
-
-  float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
-
-  if (state.currentOffset > 0) {
-    state.currentOffset -= step;
-    if (state.currentOffset < 0)
-      state.currentOffset = 0;
-  } else {
-    state.currentOffset += step;
-    if (state.currentOffset > 0)
-      state.currentOffset = 0;
-  }
+  slewOffsetTo(0.0f, dt_us);
 }
 
 void processFailsafe(unsigned long dt_us) {
@@ -428,19 +431,7 @@ void processFailsafe(unsigned long dt_us) {
     return;
   }
 
-  float step = (Config::GLIDE_SERVO_SPEED_DPS * (float)dt_us) / 1000000.0f;
-
-  if (state.currentOffset < Config::FAILSAFE_DIHEDRAL) {
-    state.currentOffset += step;
-    if (state.currentOffset > Config::FAILSAFE_DIHEDRAL) {
-      state.currentOffset = Config::FAILSAFE_DIHEDRAL;
-    }
-  } else if (state.currentOffset > Config::FAILSAFE_DIHEDRAL) {
-    state.currentOffset -= step;
-    if (state.currentOffset < Config::FAILSAFE_DIHEDRAL) {
-      state.currentOffset = Config::FAILSAFE_DIHEDRAL;
-    }
-  }
+  slewOffsetTo(Config::FAILSAFE_DIHEDRAL, dt_us);
 
   if (ServoSystem::state.isAttached) {
     ServoSystem::update(
