@@ -28,6 +28,11 @@ constexpr int SERVO_EMA_ALPHA_SHIFT = 1;
 constexpr bool REVERSE_SERVO_L = false;
 constexpr bool REVERSE_SERVO_R = false;
 
+constexpr int SERVO_US_MIN = 500;
+constexpr int SERVO_US_MAX = 2500;
+constexpr int SERVO_US_CENTER = 1500;
+constexpr int SERVO_US_DEADBAND = 3;
+
 constexpr uint32_t CRSF_BAUD = 420000;
 constexpr uint32_t SBUS_BAUD = 100000;
 constexpr size_t RX_BUFFER_SIZE = 512;
@@ -46,7 +51,8 @@ constexpr bool USE_AUTO_DETECT = true;
 constexpr Protocol FIXED_PROTOCOL = Protocol::CRSF;
 
 constexpr unsigned long LOOP_DT_US = 3333;
-constexpr int FLAP_AMP = 65;
+constexpr float FLAP_AMP_IDLE = 55.0f;
+constexpr float FLAP_AMP_MAX_THR = 35.0f;
 constexpr uint32_t FLAP_SPEED_MIN = 157286;
 constexpr uint32_t FLAP_SPEED_MAX = 262144;
 constexpr int PERCH_MULT = 31;
@@ -90,11 +96,17 @@ static_assert(CH_THROTTLE < 16, "CH_THROTTLE out of range");
 static_assert(CH_YAW < 16, "CH_YAW out of range");
 static_assert(CH_KILL_SWITCH < 16, "CH_KILL_SWITCH out of range");
 
-inline int mapTrim15(int x) {
+inline float mapTrimFloat(int x) {
   int d = x - CH_CENTER;
-  if (abs(d) <= STICK_DEADBAND) return 0;
-  int s = (d > 0) ? (d - STICK_DEADBAND) : (d + STICK_DEADBAND);
-  return constrain(s / 30, -15, 15);
+  int mag = abs(d) - STICK_DEADBAND;
+  if (mag <= 0)
+    return 0.0f;
+  float s = (d > 0) ? (float)mag : -(float)mag;
+  return constrain(s / 30.0f, -15.0f, 15.0f);
+}
+
+inline int angleToUs(float angleDeg) {
+  return (int)lroundf(SERVO_US_MIN + angleDeg * (SERVO_US_MAX - SERVO_US_MIN) / 180.0f);
 }
 
 }

@@ -12,10 +12,10 @@ struct Control {
   Servo right;
 
   static constexpr int centerAngle = 90;
-  int lastPosL = centerAngle;
-  int lastPosR = centerAngle;
-  int32_t filteredL = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
-  int32_t filteredR = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
+  int lastUsL = Config::SERVO_US_CENTER;
+  int lastUsR = Config::SERVO_US_CENTER;
+  int32_t filteredL = Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
+  int32_t filteredR = Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
   bool isAttached = false;
 };
 
@@ -23,6 +23,6 @@ extern Control state;
 
 void attachAll();
 void detachAll();
-void update(int targetL, int targetR, bool bypassFilter = false);
+void update(float targetL, float targetR, bool bypassFilter = false);
 }
 #endif

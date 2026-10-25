@@ -135,8 +135,11 @@ void syncFilterCache() {
   }
 }
 
-void updateFilters() {
-  if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+bool pollChannels(unsigned long nowMs, RcFrame &out) {
+  if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
+    return false;
+  }
+
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
     if (diff != 0) {
@@ -146,17 +149,28 @@ void updateFilters() {
       }
     }
   }
-  if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
-}
 
-int16_t getFiltered(byte ch) {
-  if (ch >= 16)
-    return Config::CH_CENTER;
-  int16_t val;
-  if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
-  val = state.emaValues[ch];
-  if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
-  return val;
+  bool protocolReady = !Config::USE_AUTO_DETECT || state.isLocked;
+  bool rawConnected = protocolReady && state.hasFrame &&
+                      (nowMs - state.lastTime < Config::RX_TIMEOUT_MS);
+  if (state.currentProto == Protocol::SBUS &&
+      (state.sbusFailSafe || state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
+    rawConnected = false;
+  }
+  if (state.currentProto == Protocol::CRSF && state.crsfFailSafe) {
+    rawConnected = false;
+  }
+
+  out.connected = rawConnected;
+  out.ch[0] = state.emaValues[Config::CH_STEERING];
+  out.ch[1] = state.emaValues[Config::CH_ELEVATOR];
+  out.ch[2] = state.emaValues[Config::CH_THROTTLE];
+  out.ch[3] = state.emaValues[Config::CH_YAW];
+  out.kill = state.emaValues[Config::CH_KILL_SWITCH];
+  out.proto = state.currentProto;
+
+  xSemaphoreGiveRecursive(rxMutex);
+  return true;
 }
 
 bool readCrsf() {

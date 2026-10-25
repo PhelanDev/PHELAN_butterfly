@@ -31,6 +31,8 @@ struct State {
 
 extern State state;
 
+uint16_t triPhaseFromOffset(float offset, float amp, bool flapUp);
+void slewOffsetTo(float target, unsigned long dt_us);
 void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us);
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us);
 void updateCurrentOffsetGlide(unsigned long dt_us);

@@ -51,8 +51,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.disarmStartTime = 0;
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
-      ServoSystem::state.lastPosL = ServoSystem::Control::centerAngle;
-      ServoSystem::state.lastPosR = ServoSystem::Control::centerAngle;
+      ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
+      ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
       ServoSystem::attachAll();
     }
   } else {
@@ -63,8 +63,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
   Flight::updateCurrentOffsetGlide(dt_us);
   if (ServoSystem::state.isAttached) {
     ServoSystem::update(
-        ServoSystem::state.centerAngle + (int)Flight::state.currentOffset,
-        ServoSystem::state.centerAngle - (int)Flight::state.currentOffset,
+        ServoSystem::state.centerAngle + Flight::state.currentOffset,
+        ServoSystem::state.centerAngle - Flight::state.currentOffset,
         false);
   }
 }
@@ -118,16 +118,10 @@ void handleModeTransition(int elevator, int throttle) {
 
 void computeServoTargets(unsigned long dt_us, int steering, int elevator,
                          int throttle) {
-  int steerValue = (abs(steering - Config::CH_CENTER) > Config::STICK_DEADBAND)
-                       ? Config::mapTrim15(steering)
-                       : 0;
-  int elevOffset = 0;
-
-  if (Flight::state.mode != FlightMode::PERCHING) {
-    elevOffset = (abs(elevator - Config::CH_CENTER) > Config::STICK_DEADBAND)
-                     ? Config::mapTrim15(elevator)
-                     : 0;
-  }
+  float steerValue = Config::mapTrimFloat(steering);
+  float elevOffset = (Flight::state.mode != FlightMode::PERCHING)
+                         ? Config::mapTrimFloat(elevator)
+                         : 0.0f;
 
   if (Flight::state.mode == FlightMode::PERCHING) {
     int currentPull =
@@ -142,10 +136,9 @@ void computeServoTargets(unsigned long dt_us, int steering, int elevator,
       Flight::updateCurrentOffsetSine(throttle, dt_us);
   }
 
-  int offsetInt = (int)Flight::state.currentOffset;
   ServoSystem::update(
-      ServoSystem::state.centerAngle + offsetInt + elevOffset + steerValue,
-      ServoSystem::state.centerAngle - offsetInt - elevOffset + steerValue,
+      ServoSystem::state.centerAngle + Flight::state.currentOffset + elevOffset + steerValue,
+      ServoSystem::state.centerAngle - Flight::state.currentOffset - elevOffset + steerValue,
       Flight::state.isFlapping);
 }
 
@@ -215,26 +208,34 @@ void vReceiverTask(void *pvParameters) {
 
 #include <atomic>
 
-struct alignas(4) ControlSnapshot {
-  int16_t ch[4];
-  uint8_t flags;
+struct TelemetrySnapshot {
+  bool connected;
+  bool armed;
+  bool servoAttached;
+  Protocol proto;
+  int16_t throttle;
+  int16_t offsetDeg;
 };
 
-static ControlSnapshot g_cmd_buffer[2];
-static std::atomic<uint8_t> g_cmd_index{0};
+static std::atomic<uint32_t> g_telemSeq{0};
+static TelemetrySnapshot g_telem;
 
-inline void publishControlSnapshot(int16_t roll, int16_t pitch, int16_t throttle, int16_t yaw, uint8_t flags) {
-  uint8_t next = 1 - g_cmd_index.load(std::memory_order_relaxed);
-  g_cmd_buffer[next].ch[0] = roll;
-  g_cmd_buffer[next].ch[1] = pitch;
-  g_cmd_buffer[next].ch[2] = throttle;
-  g_cmd_buffer[next].ch[3] = yaw;
-  g_cmd_buffer[next].flags = flags;
-  g_cmd_index.store(next, std::memory_order_release);
+inline void publishTelemetry(const TelemetrySnapshot &s) {
+  g_telemSeq.fetch_add(1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  g_telem = s;
+  g_telemSeq.fetch_add(1, std::memory_order_release);
 }
 
-inline ControlSnapshot readControlSnapshot() {
-  return g_cmd_buffer[g_cmd_index.load(std::memory_order_acquire)];
+inline TelemetrySnapshot readTelemetry() {
+  TelemetrySnapshot snap;
+  uint32_t s1;
+  do {
+    s1 = g_telemSeq.load(std::memory_order_acquire);
+    snap = g_telem;
+    std::atomic_thread_fence(std::memory_order_acquire);
+  } while ((s1 & 1) || s1 != g_telemSeq.load(std::memory_order_relaxed));
+  return snap;
 }
 
 void flightCoreTask(void *pvParameters) {
@@ -242,6 +243,7 @@ void flightCoreTask(void *pvParameters) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(3);
   unsigned long lastUs = micros();
+  static Receiver::RcFrame rc;
 
   for (;;) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -253,9 +255,9 @@ void flightCoreTask(void *pvParameters) {
       dt_us = Config::LOOP_DT_US;
     lastUs = nowUs;
 
-    ControlSnapshot cmd = readControlSnapshot();
-    bool isConnected = (cmd.flags & 0x01) != 0;
-    bool killActive = (cmd.flags & 0x02) != 0;
+    Receiver::pollChannels(millis(), rc);
+
+    bool killActive = rc.kill > Config::KILL_SWITCH_THRESHOLD;
 
     static uint8_t killDebounce = 0;
     if (killActive) {
@@ -278,9 +280,13 @@ void flightCoreTask(void *pvParameters) {
       Flight::state.failsafeEnterMs = 0;
       ServoSystem::detachAll();
     } else {
-      processFlightLogic(dt_us, cmd.ch[0], cmd.ch[1], cmd.ch[2],
-                         cmd.ch[3], isConnected);
+      processFlightLogic(dt_us, rc.ch[0], rc.ch[1], rc.ch[2],
+                         rc.ch[3], rc.connected);
     }
+
+    publishTelemetry({rc.connected, Flight::state.isArmed,
+                      ServoSystem::state.isAttached, rc.proto,
+                      rc.ch[2], (int16_t)Flight::state.currentOffset});
   }
 }
 
@@ -302,66 +308,26 @@ void setup() {
 
   Receiver::init(&rxSerial, rxTaskHandle);
 
-  ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
-  ServoSystem::state.lastPosR = ServoSystem::state.centerAngle;
+  ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
+  ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
 
   xTaskCreatePinnedToCore(flightCoreTask, "FlightCore", 4096, NULL, 5, NULL, 0);
 
-  LOG_INFO("PHELAN BUTTERFLY 2IN1 READY");
+  LOG_INFO("PHELAN BUTTERFLY 2IN1 SINE READY");
 }
 
 void loop() {
-  static bool snapshotConnected = false;
-  static Protocol snapProto = Protocol::DETECT;
-  static int16_t emaSnapshot[16] = {1500, 1500, 1500, 1500, 1500, 1500,
-                                    1500, 1500, 1500, 1500, 1500, 1500,
-                                    1500, 1500, 1500, 1500};
-
   esp_task_wdt_reset();
 
   unsigned long currentMillis = millis();
 
-  Receiver::updateFilters();
+  TelemetrySnapshot t = readTelemetry();
 
-  if (Receiver::rxMutex) {
-    if (xSemaphoreTakeRecursive(Receiver::rxMutex, pdMS_TO_TICKS(1))) {
-      bool protocolReady = !Config::USE_AUTO_DETECT || Receiver::state.isLocked;
-
-      bool rawConnected =
-          protocolReady && Receiver::state.hasFrame &&
-          (currentMillis - Receiver::state.lastTime < Config::RX_TIMEOUT_MS);
-      if (Receiver::state.currentProto == Protocol::SBUS &&
-          (Receiver::state.sbusFailSafe ||
-             Receiver::state.sbusLostFrames >= Config::CONN_LOST_THRESHOLD)) {
-        rawConnected = false;
-      }
-      if (Receiver::state.currentProto == Protocol::CRSF &&
-          Receiver::state.crsfFailSafe) {
-        rawConnected = false;
-      }
-      Receiver::state.isConnected = rawConnected;
-      snapshotConnected = rawConnected;
-      snapProto = Receiver::state.currentProto;
-      memcpy(emaSnapshot, Receiver::state.emaValues, sizeof(emaSnapshot));
-      xSemaphoreGiveRecursive(Receiver::rxMutex);
-    }
-  }
-
-  bool killActive =
-      emaSnapshot[Config::CH_KILL_SWITCH] > Config::KILL_SWITCH_THRESHOLD;
-
-  uint8_t flags = (snapshotConnected ? 0x01 : 0x00) | (killActive ? 0x02 : 0x00);
-  publishControlSnapshot(emaSnapshot[Config::CH_STEERING],
-                         emaSnapshot[Config::CH_ELEVATOR],
-                         emaSnapshot[Config::CH_THROTTLE],
-                         emaSnapshot[Config::CH_YAW],
-                         flags);
-
-  if (!snapshotConnected) {
+  if (!t.connected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
   } else {
     digitalWrite(Config::LED_PIN,
-                 Flight::state.isArmed
+                 t.armed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
   }
@@ -369,29 +335,31 @@ void loop() {
   static unsigned long lastLogTime = 0;
   if (currentMillis - lastLogTime >= 1000) {
     lastLogTime = currentMillis;
-    if (logMutex) xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
+    if (logMutex)
+      xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
     if (Serial.availableForWrite() >= 64) {
-      if (snapshotConnected) {
-        Serial.print(Flight::state.isArmed ? F("[FLY] ") : F("[ARM?] "));
-        if (snapProto == Protocol::CRSF)
+      if (t.connected) {
+        Serial.print(t.armed ? F("[FLY] ") : F("[ARM?] "));
+        if (t.proto == Protocol::CRSF)
           Serial.print(F("CRSF "));
-        else if (snapProto == Protocol::SBUS)
+        else if (t.proto == Protocol::SBUS)
           Serial.print(F("SBUS "));
         else
           Serial.print(F("DETC "));
         Serial.print(F("CH3:"));
-        Serial.print(emaSnapshot[2]);
+        Serial.print(t.throttle);
         Serial.print(F(" Off:"));
-        Serial.print((int)Flight::state.currentOffset);
+        Serial.print(t.offsetDeg);
         Serial.print(F(" SVO:"));
-        Serial.print(ServoSystem::state.isAttached ? F("OK") : F("DET"));
+        Serial.print(t.servoAttached ? F("OK") : F("DET"));
         Serial.print(F(" LED:"));
         Serial.println(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
       } else {
         Serial.println(F("[WARN] NO SIGNAL or DETECTING..."));
       }
     }
-    if (logMutex) xSemaphoreGiveRecursive(logMutex);
+    if (logMutex)
+      xSemaphoreGiveRecursive(logMutex);
   }
 
   delay(2);

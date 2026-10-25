@@ -34,7 +34,6 @@ struct State {
                            1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
 
   bool hasFrame = false;
-  bool isConnected = false;
   unsigned long lastTime = 0;
   unsigned long lastByteTimeCrsf = 0;
   unsigned long lastByteTimeSbus = 0;
@@ -45,11 +44,17 @@ struct State {
 extern State state;
 extern SemaphoreHandle_t rxMutex;
 
+struct RcFrame {
+  int16_t ch[4] = {1500, 1500, 1500, 1500};   // steering, elevator, throttle, yaw
+  int16_t kill = 1500;
+  bool connected = false;
+  Protocol proto = Protocol::DETECT;
+};
+
 void init(HardwareSerial *serial, TaskHandle_t taskToNotify = NULL);
 void resetParsers();
 void syncFilterCache();
-void updateFilters();
-int16_t getFiltered(byte ch);
+bool pollChannels(unsigned long nowMs, RcFrame &out);
 
 bool readCrsf();
 bool readSbus();

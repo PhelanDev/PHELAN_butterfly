@@ -31,6 +31,12 @@ struct State {
 
 extern State state;
 
+inline bool isRisingPhase(uint16_t phase) {
+  return (uint16_t)(phase + 16384) < 32768;
+}
+
+uint16_t sinPhaseFromOffset(float offset, float amp, bool flapUp);
+void slewOffsetTo(float target, unsigned long dt_us);
 void updateCurrentOffsetSine(int throttle, unsigned long dt_us);
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us);
 void updateCurrentOffsetGlide(unsigned long dt_us);
