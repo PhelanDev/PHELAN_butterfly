@@ -1107,7 +1107,37 @@ void vReceiverTask(void *pvParameters) {
   }
 }
 
-static Receiver::RcFrame g_latestRc;
+#include <atomic>
+
+struct TelemetrySnapshot {
+  bool connected;
+  bool armed;
+  bool servoAttached;
+  Protocol proto;
+  int16_t throttle;
+  int16_t offsetDeg;
+};
+
+static std::atomic<uint32_t> g_telemSeq{0};
+static TelemetrySnapshot g_telem;
+
+inline void publishTelemetry(const TelemetrySnapshot &s) {
+  g_telemSeq.fetch_add(1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  g_telem = s;
+  g_telemSeq.fetch_add(1, std::memory_order_release);
+}
+
+inline TelemetrySnapshot readTelemetry() {
+  TelemetrySnapshot snap;
+  uint32_t s1;
+  do {
+    s1 = g_telemSeq.load(std::memory_order_acquire);
+    snap = g_telem;
+    std::atomic_thread_fence(std::memory_order_acquire);
+  } while ((s1 & 1) || s1 != g_telemSeq.load(std::memory_order_relaxed));
+  return snap;
+}
 
 void flightCoreTask(void *pvParameters) {
   esp_task_wdt_add(NULL);
@@ -1127,7 +1157,6 @@ void flightCoreTask(void *pvParameters) {
     lastUs = nowUs;
 
     Receiver::pollChannels(millis(), rc);
-    g_latestRc = rc;
 
     bool killActive = rc.kill > Config::KILL_SWITCH_THRESHOLD;
 
@@ -1155,6 +1184,10 @@ void flightCoreTask(void *pvParameters) {
       processFlightLogic(dt_us, rc.ch[0], rc.ch[1], rc.ch[2],
                          rc.ch[3], rc.connected);
     }
+
+    publishTelemetry({rc.connected, Flight::state.isArmed,
+                      ServoSystem::state.isAttached, rc.proto,
+                      rc.ch[2], (int16_t)Flight::state.currentOffset});
   }
 }
 
@@ -1189,14 +1222,13 @@ void loop() {
 
   unsigned long currentMillis = millis();
 
-  bool snapshotConnected = g_latestRc.connected;
-  Protocol snapProto = g_latestRc.proto;
+  TelemetrySnapshot t = readTelemetry();
 
-  if (!snapshotConnected) {
+  if (!t.connected) {
     digitalWrite(Config::LED_PIN, (currentMillis / 250) % 2 == 0 ? HIGH : LOW);
   } else {
     digitalWrite(Config::LED_PIN,
-                 Flight::state.isArmed
+                 t.armed
                      ? HIGH
                      : ((currentMillis / 1000) % 2 == 0 ? HIGH : LOW));
   }
@@ -1207,20 +1239,20 @@ void loop() {
     if (logMutex)
       xSemaphoreTakeRecursive(logMutex, portMAX_DELAY);
     if (Serial.availableForWrite() >= 64) {
-      if (snapshotConnected) {
-        Serial.print(Flight::state.isArmed ? F("[FLY] ") : F("[ARM?] "));
-        if (snapProto == Protocol::CRSF)
+      if (t.connected) {
+        Serial.print(t.armed ? F("[FLY] ") : F("[ARM?] "));
+        if (t.proto == Protocol::CRSF)
           Serial.print(F("CRSF "));
-        else if (snapProto == Protocol::SBUS)
+        else if (t.proto == Protocol::SBUS)
           Serial.print(F("SBUS "));
         else
           Serial.print(F("DETC "));
         Serial.print(F("CH3:"));
-        Serial.print(g_latestRc.ch[2]);
+        Serial.print(t.throttle);
         Serial.print(F(" Off:"));
-        Serial.print((int)Flight::state.currentOffset);
+        Serial.print(t.offsetDeg);
         Serial.print(F(" SVO:"));
-        Serial.print(ServoSystem::state.isAttached ? F("OK") : F("DET"));
+        Serial.print(t.servoAttached ? F("OK") : F("DET"));
         Serial.print(F(" LED:"));
         Serial.println(digitalRead(Config::LED_PIN) ? F("ON") : F("OFF"));
       } else {
