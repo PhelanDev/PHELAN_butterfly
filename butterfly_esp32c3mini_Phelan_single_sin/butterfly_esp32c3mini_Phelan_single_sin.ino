@@ -33,6 +33,11 @@ constexpr int SERVO_EMA_ALPHA_SHIFT = 1;
 constexpr bool REVERSE_SERVO_L = false;
 constexpr bool REVERSE_SERVO_R = false;
 
+constexpr int SERVO_US_MIN = 500;
+constexpr int SERVO_US_MAX = 2500;
+constexpr int SERVO_US_CENTER = 1500;
+constexpr int SERVO_US_DEADBAND = 3;
+
 constexpr uint32_t CRSF_BAUD = 420000;
 constexpr uint32_t SBUS_BAUD = 100000;
 constexpr size_t RX_BUFFER_SIZE = 512;
@@ -95,11 +100,17 @@ static_assert(CH_THROTTLE < 16, "CH_THROTTLE out of range");
 static_assert(CH_YAW < 16, "CH_YAW out of range");
 static_assert(CH_KILL_SWITCH < 16, "CH_KILL_SWITCH out of range");
 
-inline int mapTrim15(int x) {
+inline float mapTrimFloat(int x) {
   int d = x - CH_CENTER;
-  if (abs(d) <= STICK_DEADBAND) return 0;
-  int s = (d > 0) ? (d - STICK_DEADBAND) : (d + STICK_DEADBAND);
-  return constrain(s / 30, -15, 15);
+  int mag = abs(d) - STICK_DEADBAND;
+  if (mag <= 0)
+    return 0.0f;
+  float s = (d > 0) ? (float)mag : -(float)mag;
+  return constrain(s / 30.0f, -15.0f, 15.0f);
+}
+
+inline int angleToUs(float angleDeg) {
+  return (int)lroundf(SERVO_US_MIN + angleDeg * (SERVO_US_MAX - SERVO_US_MIN) / 180.0f);
 }
 
 }
@@ -165,10 +176,10 @@ struct Control {
   Servo right;
 
   static constexpr int centerAngle = 90;
-  int lastPosL = centerAngle;
-  int lastPosR = centerAngle;
-  int32_t filteredL = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
-  int32_t filteredR = 90 << Config::SERVO_EMA_ALPHA_SHIFT;
+  int lastUsL = Config::SERVO_US_CENTER;
+  int lastUsR = Config::SERVO_US_CENTER;
+  int32_t filteredL = Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
+  int32_t filteredR = Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
   bool isAttached = false;
 };
 
@@ -178,16 +189,12 @@ void attachAll() {
   if (!state.isAttached) {
     state.left.setPeriodHertz(Config::SERVO_HZ);
     state.right.setPeriodHertz(Config::SERVO_HZ);
-    state.left.attach(Config::SERVO_L_PIN, 500, 2500);
-    state.right.attach(Config::SERVO_R_PIN, 500, 2500);
-    int outL =
-        Config::REVERSE_SERVO_L ? (180 - state.lastPosL) : state.lastPosL;
-    int outR =
-        Config::REVERSE_SERVO_R ? (180 - state.lastPosR) : state.lastPosR;
-    state.left.write(outL);
-    state.right.write(outR);
-    state.filteredL = (int32_t)state.lastPosL << Config::SERVO_EMA_ALPHA_SHIFT;
-    state.filteredR = (int32_t)state.lastPosR << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.left.attach(Config::SERVO_L_PIN, Config::SERVO_US_MIN, Config::SERVO_US_MAX);
+    state.right.attach(Config::SERVO_R_PIN, Config::SERVO_US_MIN, Config::SERVO_US_MAX);
+    state.left.writeMicroseconds(state.lastUsL);
+    state.right.writeMicroseconds(state.lastUsR);
+    state.filteredL = (int32_t)state.lastUsL << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.filteredR = (int32_t)state.lastUsR << Config::SERVO_EMA_ALPHA_SHIFT;
     state.isAttached = true;
   }
 }
@@ -200,40 +207,41 @@ void detachAll() {
   }
 }
 
-void update(int targetL, int targetR, bool bypassFilter = false) {
+void update(float targetL, float targetR, bool bypassFilter = false) {
   if (!state.isAttached)
     return;
-  targetL =
-      constrain(targetL, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
-  targetR =
-      constrain(targetR, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
+  targetL = constrain(targetL, (float)Config::SERVO_MIN_ANGLE, (float)Config::SERVO_MAX_ANGLE);
+  targetR = constrain(targetR, (float)Config::SERVO_MIN_ANGLE, (float)Config::SERVO_MAX_ANGLE);
+
+  float angleL = Config::REVERSE_SERVO_L ? (180.0f - targetL) : targetL;
+  float angleR = Config::REVERSE_SERVO_R ? (180.0f - targetR) : targetR;
+
+  int targetUsL = Config::angleToUs(angleL);
+  int targetUsR = Config::angleToUs(angleR);
 
   if (bypassFilter) {
-    state.filteredL = (int32_t)targetL << Config::SERVO_EMA_ALPHA_SHIFT;
-    state.filteredR = (int32_t)targetR << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.filteredL = (int32_t)targetUsL << Config::SERVO_EMA_ALPHA_SHIFT;
+    state.filteredR = (int32_t)targetUsR << Config::SERVO_EMA_ALPHA_SHIFT;
   } else {
-    state.filteredL +=
-        targetL - (state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT);
-    state.filteredR +=
-        targetR - (state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT);
+    state.filteredL += targetUsL - (state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT);
+    state.filteredR += targetUsR - (state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT);
   }
 
-  targetL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
-  targetR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
-  targetL =
-      constrain(targetL, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
-  targetR =
-      constrain(targetR, Config::SERVO_MIN_ANGLE, Config::SERVO_MAX_ANGLE);
+  int usL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
+  int usR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
 
-  if (abs(targetL - state.lastPosL) >= 2) {
-    int outL = Config::REVERSE_SERVO_L ? (180 - targetL) : targetL;
-    state.left.write(outL);
-    state.lastPosL = targetL;
+  const int usMin = Config::angleToUs((float)Config::SERVO_MIN_ANGLE);
+  const int usMax = Config::angleToUs((float)Config::SERVO_MAX_ANGLE);
+  usL = constrain(usL, usMin, usMax);
+  usR = constrain(usR, usMin, usMax);
+
+  if (abs(usL - state.lastUsL) >= Config::SERVO_US_DEADBAND) {
+    state.left.writeMicroseconds(usL);
+    state.lastUsL = usL;
   }
-  if (abs(targetR - state.lastPosR) >= 2) {
-    int outR = Config::REVERSE_SERVO_R ? (180 - targetR) : targetR;
-    state.right.write(outR);
-    state.lastPosR = targetR;
+  if (abs(usR - state.lastUsR) >= Config::SERVO_US_DEADBAND) {
+    state.right.writeMicroseconds(usR);
+    state.lastUsR = usR;
   }
 }
 
@@ -436,8 +444,8 @@ void processFailsafe(unsigned long dt_us) {
 
   if (ServoSystem::state.isAttached) {
     ServoSystem::update(
-        ServoSystem::state.centerAngle + (int)state.currentOffset,
-        ServoSystem::state.centerAngle - (int)state.currentOffset, false);
+        ServoSystem::state.centerAngle + state.currentOffset,
+        ServoSystem::state.centerAngle - state.currentOffset, false);
   }
   state.phaseNeedsResync = true;
 }
@@ -922,8 +930,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.disarmStartTime = 0;
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
-      ServoSystem::state.lastPosL = ServoSystem::Control::centerAngle;
-      ServoSystem::state.lastPosR = ServoSystem::Control::centerAngle;
+      ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
+      ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
       ServoSystem::attachAll();
     }
   } else {
@@ -934,8 +942,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
   Flight::updateCurrentOffsetGlide(dt_us);
   if (ServoSystem::state.isAttached) {
     ServoSystem::update(
-        ServoSystem::state.centerAngle + (int)Flight::state.currentOffset,
-        ServoSystem::state.centerAngle - (int)Flight::state.currentOffset,
+        ServoSystem::state.centerAngle + Flight::state.currentOffset,
+        ServoSystem::state.centerAngle - Flight::state.currentOffset,
         false);
   }
 }
@@ -989,16 +997,10 @@ void handleModeTransition(int elevator, int throttle) {
 
 void computeServoTargets(unsigned long dt_us, int steering, int elevator,
                          int throttle) {
-  int steerValue = (abs(steering - Config::CH_CENTER) > Config::STICK_DEADBAND)
-                       ? Config::mapTrim15(steering)
-                       : 0;
-  int elevOffset = 0;
-
-  if (Flight::state.mode != FlightMode::PERCHING) {
-    elevOffset = (abs(elevator - Config::CH_CENTER) > Config::STICK_DEADBAND)
-                     ? Config::mapTrim15(elevator)
-                     : 0;
-  }
+  float steerValue = Config::mapTrimFloat(steering);
+  float elevOffset = (Flight::state.mode != FlightMode::PERCHING)
+                         ? Config::mapTrimFloat(elevator)
+                         : 0.0f;
 
   if (Flight::state.mode == FlightMode::PERCHING) {
     int currentPull =
@@ -1013,10 +1015,9 @@ void computeServoTargets(unsigned long dt_us, int steering, int elevator,
       Flight::updateCurrentOffsetSine(throttle, dt_us);
   }
 
-  int offsetInt = (int)Flight::state.currentOffset;
   ServoSystem::update(
-      ServoSystem::state.centerAngle + offsetInt + elevOffset + steerValue,
-      ServoSystem::state.centerAngle - offsetInt - elevOffset + steerValue,
+      ServoSystem::state.centerAngle + Flight::state.currentOffset + elevOffset + steerValue,
+      ServoSystem::state.centerAngle - Flight::state.currentOffset - elevOffset + steerValue,
       Flight::state.isFlapping);
 }
 
@@ -1173,8 +1174,8 @@ void setup() {
 
   Receiver::init(&rxSerial, rxTaskHandle);
 
-  ServoSystem::state.lastPosL = ServoSystem::state.centerAngle;
-  ServoSystem::state.lastPosR = ServoSystem::state.centerAngle;
+  ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
+  ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
 
   xTaskCreatePinnedToCore(flightCoreTask, "FlightCore", 4096, NULL, 5, NULL, 0);
 
