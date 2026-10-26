@@ -48,7 +48,9 @@ scratch/
 His.md
 CHANGELOG.md
 plans/
+tests/
 *.exe
 .superpowers/
 __pycache__/
 *.pyc
+
