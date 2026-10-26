@@ -580,6 +580,8 @@ void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
   }
   if (firstFrame)
     syncFilterCache();
+  else
+    updateEmaFilter();
   if (rxMutex)
     xSemaphoreGiveRecursive(rxMutex);
 }
@@ -607,6 +609,8 @@ void parseSbusChannels() {
   }
   if (firstFrame)
     syncFilterCache();
+  else if (!state.sbusFrameLost)
+    updateEmaFilter();
   if (rxMutex)
     xSemaphoreGiveRecursive(rxMutex);
 }
@@ -635,6 +639,19 @@ void syncFilterCache() {
   }
 }
 
+void updateEmaFilter() {
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
+    if (diff != 0) {
+      int16_t step = diff / (1 << Config::EMA_ALPHA_SHIFT);
+      if (step == 0) {
+        step = (diff > 0) ? 1 : -1;
+      }
+      state.emaValues[ch] += step;
+    }
+  }
+}
+
 struct RcFrame {
   int16_t ch[4] = {1500, 1500, 1500, 1500};   // steering, elevator, throttle, yaw
   int16_t kill = 1500;
@@ -647,17 +664,6 @@ bool pollChannels(RcFrame &out) {
     return false;
   }
   unsigned long nowMs = millis();
-
-  for (uint8_t ch = 0; ch < 16; ch++) {
-    int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
-    if (diff != 0) {
-      int16_t step = diff / (1 << Config::EMA_ALPHA_SHIFT);
-      if (step == 0) {
-        step = (diff > 0) ? 1 : -1;
-      }
-      state.emaValues[ch] += step;
-    }
-  }
 
   bool protocolReady = !Config::USE_AUTO_DETECT || state.isLocked;
   bool rawConnected = protocolReady && state.hasFrame &&
