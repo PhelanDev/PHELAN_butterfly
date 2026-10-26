@@ -108,7 +108,8 @@ inline float mapTrimFloat(int x) {
   if (mag <= 0)
     return 0.0f;
   float s = (d > 0) ? (float)mag : -(float)mag;
-  return constrain(s / 30.0f, -15.0f, 15.0f);
+  constexpr float span = (float)(CH_MAX - CH_CENTER - STICK_DEADBAND);
+  return constrain(s * 15.0f / span, -15.0f, 15.0f);
 }
 
 inline int angleToUs(float angleDeg) {
@@ -225,8 +226,20 @@ void update(float targetL, float targetR, bool bypassFilter = false) {
     state.filteredL = (int32_t)targetUsL << Config::SERVO_EMA_ALPHA_SHIFT;
     state.filteredR = (int32_t)targetUsR << Config::SERVO_EMA_ALPHA_SHIFT;
   } else {
-    state.filteredL += targetUsL - (state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT);
-    state.filteredR += targetUsR - (state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT);
+    int32_t scaledTargetL = (int32_t)targetUsL << Config::SERVO_EMA_ALPHA_SHIFT;
+    int32_t diffL = scaledTargetL - state.filteredL;
+    if (diffL != 0) {
+      int32_t stepL = diffL / (1 << Config::SERVO_EMA_ALPHA_SHIFT);
+      if (stepL == 0) stepL = (diffL > 0) ? 1 : -1;
+      state.filteredL += stepL;
+    }
+    int32_t scaledTargetR = (int32_t)targetUsR << Config::SERVO_EMA_ALPHA_SHIFT;
+    int32_t diffR = scaledTargetR - state.filteredR;
+    if (diffR != 0) {
+      int32_t stepR = diffR / (1 << Config::SERVO_EMA_ALPHA_SHIFT);
+      if (stepR == 0) stepR = (diffR > 0) ? 1 : -1;
+      state.filteredR += stepR;
+    }
   }
 
   int usL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
@@ -300,6 +313,10 @@ static const int16_t tri_LUT[256] = {
     -250,  -234, -219, -203, -188, -172, -156, -141, -125, -109, -94,  -78,
     -63,   -47,  -31,  -16};
 
+inline bool isRisingPhase(uint16_t phase) {
+  return (uint16_t)(phase + 16384) < 32768;
+}
+
 uint16_t triPhaseFromOffset(float offset, float amp, bool flapUp) {
   if (amp <= 0.0f) return 0;
   float r = constrain(offset / amp, -1.0f, 1.0f);
@@ -355,16 +372,9 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phase += phaseDelta;
   }
 
-  float oldOffset = state.currentOffset;
   state.currentOffset =
       ((float)tri_LUT[state.phase >> 8] * dynamicAmp) / 1000.0f;
-
-  float delta = state.currentOffset - oldOffset;
-  if (delta > 0.1f) {
-    state.isFlapUp = true;
-  } else if (delta < -0.1f) {
-    state.isFlapUp = false;
-  }
+  state.isFlapUp = isRisingPhase(state.phase);
 }
 
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
@@ -385,6 +395,9 @@ void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
 
 void updateCurrentOffsetGlide(unsigned long dt_us) {
   slewOffsetTo(0.0f, dt_us);
+  if (fabsf(state.currentOffset) < 0.01f) {
+    state.isFlapUp = true;
+  }
 }
 
 void processFailsafe(unsigned long dt_us) {
@@ -975,9 +988,13 @@ void computeServoTargets(unsigned long dt_us, int steering, int elevator,
                          : 0.0f;
 
   if (Flight::state.mode == FlightMode::PERCHING) {
-    int currentPull =
-        constrain(Config::CH_MIN + (Config::CH_CENTER - elevator) * 2,
-                  Config::CH_MIN, Config::CH_MAX);
+    int currentPull = Config::CH_MIN;
+    if (elevator <= Config::PERCH_ENTER_ELEV) {
+      currentPull = Config::CH_MIN + (int32_t)(Config::PERCH_ENTER_ELEV - elevator) *
+                    (Config::CH_MAX - Config::CH_MIN) /
+                    (Config::PERCH_ENTER_ELEV - Config::CH_MIN);
+      currentPull = constrain(currentPull, Config::CH_MIN, Config::CH_MAX);
+    }
     Flight::state.perchAngleLevel = currentPull;
     Flight::updateCurrentOffsetPerch(Flight::state.perchAngleLevel, dt_us);
   } else {

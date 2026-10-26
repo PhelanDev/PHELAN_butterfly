@@ -88,7 +88,8 @@ inline float mapTrimFloat(int x) {
   if (mag <= 0)
     return 0.0f;
   float s = (d > 0) ? (float)mag : -(float)mag;
-  return constrain(s / 30.0f, -15.0f, 15.0f);
+  constexpr float span = (float)(CH_MAX - CH_CENTER - STICK_DEADBAND);
+  return constrain(s * 15.0f / span, -15.0f, 15.0f);
 }
 
 inline int angleToUs(float angleDeg) {
