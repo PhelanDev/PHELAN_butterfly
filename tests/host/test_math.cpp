@@ -171,6 +171,25 @@ void test_ping_pong_telemetry() {
   printf("  [PASS] test_ping_pong_telemetry\n");
 }
 
+void test_servo_compile_time_limits() {
+  const int SERVO_US_MIN = 500;
+  const int SERVO_US_MAX = 2500;
+  const int SERVO_MIN_ANGLE = 20;
+  const int SERVO_MAX_ANGLE = 160;
+
+  constexpr int LIM_MIN = 500 + (20 * (2500 - 500) + 90) / 180;
+  constexpr int LIM_MAX = 500 + (160 * (2500 - 500) + 90) / 180;
+
+  int runtime_min = (int)lroundf(500.0f + 20.0f * (2500.0f - 500.0f) / 180.0f);
+  int runtime_max = (int)lroundf(500.0f + 160.0f * (2500.0f - 500.0f) / 180.0f);
+
+  assert(LIM_MIN == 722);
+  assert(LIM_MAX == 2278);
+  assert(LIM_MIN == runtime_min);
+  assert(LIM_MAX == runtime_max);
+  printf("  [PASS] test_servo_compile_time_limits (722, 2278)\n");
+}
+
 int main() {
   test_trim_span_490();
   test_is_rising_phase();
@@ -178,6 +197,7 @@ int main() {
   test_scaled_servo_ema();
   test_smooth_perch_mapping();
   test_ping_pong_telemetry();
+  test_servo_compile_time_limits();
   printf("ALL HOST MATH TESTS PASSED!\n");
   return 0;
 }
