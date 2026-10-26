@@ -15,11 +15,11 @@ def read_file(rel_path):
 
 # Audit 1: CRSF framing flow & Type 0x14 lock
 def audit_bug1(content):
-    # Check A: crsfIndex == 2 has continue after crsfIndex = 1
+    # Check A: crsfIndex == 2 has continue inside the invalid length block
     has_continue_at_idx2 = bool(re.search(
         r'if\s*\(\s*(?:state|m_state)\.crsfIndex\s*==\s*2\s*\)[\s\S]*?'
-        r'if\s*\(\s*c\s*==\s*0xC8\s*\)\s*\{[\s\S]*?'
-        r'(?:state|m_state)\.crsfIndex\s*=\s*1;[\s\S]*?continue;',
+        r'(?:state|m_state)\.crsfLength\s*<\s*2\s*\)\s*\{[\s\S]*?'
+        r'continue;',
         content
     ))
     # Check B: crsfIndex == 3 enforces type == 0x14 && crsfLength == 12
