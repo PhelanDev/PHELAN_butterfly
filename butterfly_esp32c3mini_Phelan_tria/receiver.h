@@ -53,6 +53,7 @@ struct RcFrame {
 void init(HardwareSerial *serial, TaskHandle_t taskToNotify = NULL);
 void resetParsers();
 void syncFilterCache();
+void updateEmaFilter();
 bool pollChannels(RcFrame &out);
 
 bool readCrsf();

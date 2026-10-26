@@ -88,6 +88,8 @@ void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
   }
   if (firstFrame)
     syncFilterCache();
+  else
+    updateEmaFilter();
   if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
 }
 
@@ -113,6 +115,8 @@ void parseSbusChannels() {
   }
   if (firstFrame)
     syncFilterCache();
+  else if (!state.sbusFrameLost)
+    updateEmaFilter();
   if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
 }
 
@@ -138,12 +142,7 @@ void syncFilterCache() {
   }
 }
 
-bool pollChannels(RcFrame &out) {
-  if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
-    return false;
-  }
-  unsigned long nowMs = millis();
-
+void updateEmaFilter() {
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
     if (diff != 0) {
@@ -154,6 +153,13 @@ bool pollChannels(RcFrame &out) {
       state.emaValues[ch] += step;
     }
   }
+}
+
+bool pollChannels(RcFrame &out) {
+  if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
+    return false;
+  }
+  unsigned long nowMs = millis();
 
   bool protocolReady = !Config::USE_AUTO_DETECT || state.isLocked;
   bool rawConnected = protocolReady && state.hasFrame &&
