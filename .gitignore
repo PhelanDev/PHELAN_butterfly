@@ -50,4 +50,5 @@ CHANGELOG.md
 plans/
 *.exe
 .superpowers/
-
+__pycache__/
+*.pyc
