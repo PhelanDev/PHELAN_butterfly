@@ -43,17 +43,27 @@ void update(float targetL, float targetR, bool bypassFilter) {
     state.filteredL = (int32_t)targetUsL << Config::SERVO_EMA_ALPHA_SHIFT;
     state.filteredR = (int32_t)targetUsR << Config::SERVO_EMA_ALPHA_SHIFT;
   } else {
-    state.filteredL += targetUsL - (state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT);
-    state.filteredR += targetUsR - (state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT);
+    int32_t scaledTargetL = (int32_t)targetUsL << Config::SERVO_EMA_ALPHA_SHIFT;
+    int32_t diffL = scaledTargetL - state.filteredL;
+    if (diffL != 0) {
+      int32_t stepL = diffL / (1 << Config::SERVO_EMA_ALPHA_SHIFT);
+      if (stepL == 0) stepL = (diffL > 0) ? 1 : -1;
+      state.filteredL += stepL;
+    }
+    int32_t scaledTargetR = (int32_t)targetUsR << Config::SERVO_EMA_ALPHA_SHIFT;
+    int32_t diffR = scaledTargetR - state.filteredR;
+    if (diffR != 0) {
+      int32_t stepR = diffR / (1 << Config::SERVO_EMA_ALPHA_SHIFT);
+      if (stepR == 0) stepR = (diffR > 0) ? 1 : -1;
+      state.filteredR += stepR;
+    }
   }
 
   int usL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
   int usR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
 
-  const int usMin = Config::angleToUs((float)Config::SERVO_MIN_ANGLE);
-  const int usMax = Config::angleToUs((float)Config::SERVO_MAX_ANGLE);
-  usL = constrain(usL, usMin, usMax);
-  usR = constrain(usR, usMin, usMax);
+  usL = constrain(usL, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
+  usR = constrain(usR, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
 
   if (abs(usL - state.lastUsL) >= Config::SERVO_US_DEADBAND) {
     state.left.writeMicroseconds(usL);

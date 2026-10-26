@@ -32,6 +32,8 @@ constexpr int SERVO_US_MIN = 500;
 constexpr int SERVO_US_MAX = 2500;
 constexpr int SERVO_US_CENTER = 1500;
 constexpr int SERVO_US_DEADBAND = 3;
+constexpr int SERVO_US_LIM_MIN = SERVO_US_MIN + (SERVO_MIN_ANGLE * (SERVO_US_MAX - SERVO_US_MIN) + 90) / 180;
+constexpr int SERVO_US_LIM_MAX = SERVO_US_MIN + (SERVO_MAX_ANGLE * (SERVO_US_MAX - SERVO_US_MIN) + 90) / 180;
 
 constexpr uint32_t CRSF_BAUD = 420000;
 constexpr uint32_t SBUS_BAUD = 100000;
@@ -102,7 +104,8 @@ inline float mapTrimFloat(int x) {
   if (mag <= 0)
     return 0.0f;
   float s = (d > 0) ? (float)mag : -(float)mag;
-  return constrain(s / 30.0f, -15.0f, 15.0f);
+  constexpr float span = (float)(CH_MAX - CH_CENTER - STICK_DEADBAND);
+  return constrain(s * 15.0f / span, -15.0f, 15.0f);
 }
 
 inline int angleToUs(float angleDeg) {

@@ -85,16 +85,9 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phase += phaseDelta;
   }
 
-  float oldOffset = state.currentOffset;
+  state.isFlapUp = isRisingPhase(state.phase);
   state.currentOffset =
       ((float)tri_LUT[state.phase >> 8] * dynamicAmp) / 1000.0f;
-
-  float delta = state.currentOffset - oldOffset;
-  if (delta > 0.1f) {
-    state.isFlapUp = true;
-  } else if (delta < -0.1f) {
-    state.isFlapUp = false;
-  }
 }
 
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
@@ -115,6 +108,9 @@ void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
 
 void updateCurrentOffsetGlide(unsigned long dt_us) {
   slewOffsetTo(0.0f, dt_us);
+  if (fabsf(state.currentOffset) < 0.01f) {
+    state.isFlapUp = true;
+  }
 }
 
 void processFailsafe(unsigned long dt_us) {
