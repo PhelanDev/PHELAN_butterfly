@@ -489,7 +489,9 @@ uint8_t crsf_crc8(uint8_t *ptr, uint8_t len) {
   return crc;
 }
 
-bool isValidSbusFooter(uint8_t footer) { return footer == 0x00; }
+bool isValidSbusFooter(uint8_t footer) {
+  return (footer == 0x00) || ((footer & 0x0F) == 0x04);
+}
 
 uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
                              uint8_t payloadLen) {
@@ -603,10 +605,11 @@ bool pollChannels(unsigned long nowMs, RcFrame &out) {
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
     if (diff != 0) {
-      state.emaValues[ch] += (diff >> Config::EMA_ALPHA_SHIFT);
-      if ((diff >> Config::EMA_ALPHA_SHIFT) == 0) {
-        state.emaValues[ch] += (diff > 0) ? 1 : -1;
+      int16_t step = diff / (1 << Config::EMA_ALPHA_SHIFT);
+      if (step == 0) {
+        step = (diff > 0) ? 1 : -1;
       }
+      state.emaValues[ch] += step;
     }
   }
 
@@ -626,7 +629,7 @@ bool pollChannels(unsigned long nowMs, RcFrame &out) {
   out.ch[1] = state.emaValues[Config::CH_ELEVATOR];
   out.ch[2] = state.emaValues[Config::CH_THROTTLE];
   out.ch[3] = state.emaValues[Config::CH_YAW];
-  out.kill = state.emaValues[Config::CH_KILL_SWITCH];
+  out.kill = state.chMicros_cache[Config::CH_KILL_SWITCH];
   out.proto = state.currentProto;
 
   xSemaphoreGiveRecursive(rxMutex);
@@ -656,8 +659,13 @@ bool readCrsf() {
     if (state.crsfIndex == 2) {
       state.crsfLength = c;
       if (state.crsfLength > Config::CRSF_MAX_PAYLOAD_LEN ||
-          state.crsfLength < 2)
+          state.crsfLength < 2) {
         state.crsfIndex = 0;
+        if (c == 0xC8) {
+          state.crsfBuffer[0] = 0xC8;
+          state.crsfIndex = 1;
+        }
+      }
     }
     if (state.crsfIndex == 3) {
       uint8_t type = c;
