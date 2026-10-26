@@ -85,9 +85,9 @@ void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us) {
     state.phase += phaseDelta;
   }
 
+  state.isFlapUp = isRisingPhase(state.phase);
   state.currentOffset =
       ((float)tri_LUT[state.phase >> 8] * dynamicAmp) / 1000.0f;
-  state.isFlapUp = isRisingPhase(state.phase);
 }
 
 void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {

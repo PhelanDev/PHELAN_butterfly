@@ -62,10 +62,8 @@ void update(float targetL, float targetR, bool bypassFilter) {
   int usL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
   int usR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
 
-  const int usMin = Config::angleToUs((float)Config::SERVO_MIN_ANGLE);
-  const int usMax = Config::angleToUs((float)Config::SERVO_MAX_ANGLE);
-  usL = constrain(usL, usMin, usMax);
-  usR = constrain(usR, usMin, usMax);
+  usL = constrain(usL, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
+  usR = constrain(usR, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
 
   if (abs(usL - state.lastUsL) >= Config::SERVO_US_DEADBAND) {
     state.left.writeMicroseconds(usL);

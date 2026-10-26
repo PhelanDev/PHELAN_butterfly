@@ -51,8 +51,11 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.disarmStartTime = 0;
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
+      Flight::state.currentOffset = 0.0f;
       ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
       ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
+      ServoSystem::state.filteredL = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
+      ServoSystem::state.filteredR = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
       ServoSystem::attachAll();
     }
   } else {
@@ -76,6 +79,7 @@ void handleDisarming(unsigned long currentMillis, int throttle, int yaw) {
     else if (currentMillis - Flight::state.disarmStartTime >=
              Config::STICK_HOLD_MS) {
       Flight::state.isArmed = false;
+      Flight::state.currentOffset = 0.0f;
       ServoSystem::detachAll();
       Flight::state.mode = FlightMode::INIT;
       Flight::state.armStartTime = 0;
@@ -282,6 +286,7 @@ void flightCoreTask(void *pvParameters) {
       Flight::state.wasFlapping = false;
       Flight::state.wasPerching = false;
       Flight::state.phaseNeedsResync = true;
+      Flight::state.currentOffset = 0.0f;
       Flight::state.mode = FlightMode::INIT;
       Flight::state.failsafeEnterMs = 0;
       ServoSystem::detachAll();

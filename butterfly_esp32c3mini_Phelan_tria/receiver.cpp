@@ -205,12 +205,14 @@ bool readCrsf() {
         if (c == 0xC8) {
           state.crsfBuffer[0] = 0xC8;
           state.crsfIndex = 1;
+          continue;
         }
       }
     }
     if (state.crsfIndex == 3) {
       uint8_t type = c;
-      if (!((type == 0x16 && state.crsfLength == 24) || type == 0x14)) {
+      if (!((type == 0x16 && state.crsfLength == 24) ||
+            (type == 0x14 && state.crsfLength == 12))) {
         state.crsfIndex = 0;
         if (c == 0xC8) {
           state.crsfBuffer[0] = c;
