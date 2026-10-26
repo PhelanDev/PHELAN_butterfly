@@ -609,10 +609,11 @@ struct RcFrame {
   Protocol proto = Protocol::DETECT;
 };
 
-bool pollChannels(unsigned long nowMs, RcFrame &out) {
+bool pollChannels(RcFrame &out) {
   if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
     return false;
   }
+  unsigned long nowMs = millis();
 
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
@@ -676,8 +677,8 @@ bool readCrsf() {
         if (c == 0xC8) {
           state.crsfBuffer[0] = 0xC8;
           state.crsfIndex = 1;
-          continue;
         }
+        continue;
       }
     }
     if (state.crsfIndex == 3) {
@@ -760,7 +761,6 @@ void switchProtocol() {
     uart_set_parity(UART_NUM_1, UART_PARITY_EVEN);
     uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_2);
     uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_RXD_INV);
-    uart_flush_input(UART_NUM_1);
   } else {
     state.trialProto = Protocol::CRSF;
     uart_set_baudrate(UART_NUM_1, Config::CRSF_BAUD);
@@ -768,7 +768,10 @@ void switchProtocol() {
     uart_set_parity(UART_NUM_1, UART_PARITY_DISABLE);
     uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_1);
     uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_INV_DISABLE);
-    uart_flush_input(UART_NUM_1);
+  }
+  uart_flush_input(UART_NUM_1);
+  while (state.serialPort->available()) {
+    state.serialPort->read();
   }
   state.lastProtoSwitchTime = millis();
   LOG_INFO("Switched protocol: %s", state.trialProto == Protocol::CRSF ? "CRSF" : "SBUS");
@@ -917,6 +920,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
       Flight::state.currentOffset = 0.0f;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
       ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
       ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
       ServoSystem::state.filteredL = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
@@ -945,6 +950,11 @@ void handleDisarming(unsigned long currentMillis, int throttle, int yaw) {
              Config::STICK_HOLD_MS) {
       Flight::state.isArmed = false;
       Flight::state.currentOffset = 0.0f;
+      Flight::state.isPerching = false;
+      Flight::state.isFlapping = false;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
+      Flight::state.phaseNeedsResync = true;
       ServoSystem::detachAll();
       Flight::state.mode = FlightMode::INIT;
       Flight::state.armStartTime = 0;
@@ -1124,7 +1134,7 @@ void flightCoreTask(void *pvParameters) {
     lastUs = nowUs;
 
     static uint8_t pollFailCount = 0;
-    if (!Receiver::pollChannels(millis(), rc)) {
+    if (!Receiver::pollChannels(rc)) {
       if (++pollFailCount >= 3) {
         rc.connected = false;
       }

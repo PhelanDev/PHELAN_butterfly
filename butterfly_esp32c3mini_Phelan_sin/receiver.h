@@ -37,7 +37,6 @@ struct State {
   unsigned long lastTime = 0;
   unsigned long lastByteTimeCrsf = 0;
   unsigned long lastByteTimeSbus = 0;
-  unsigned long switchDelayStart = 0;
   HardwareSerial *serialPort = nullptr;
 };
 
@@ -54,7 +53,7 @@ struct RcFrame {
 void init(HardwareSerial *serial, TaskHandle_t taskToNotify = NULL);
 void resetParsers();
 void syncFilterCache();
-bool pollChannels(unsigned long nowMs, RcFrame &out);
+bool pollChannels(RcFrame &out);
 
 bool readCrsf();
 bool readSbus();
