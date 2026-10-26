@@ -14,26 +14,18 @@ def read_file(rel_path):
 
 # Audit 1: CRSF Index 2 Continue placement outside if (c == 0xC8)
 def audit_bug1_crsf_continue(content):
-    # Pattern: crsfIndex == 2 -> if (crsfLength > CRSF_MAX_PAYLOAD_LEN || crsfLength < 2)
-    # Inside: if (c == 0xC8) { crsfBuffer[0] = 0xC8; crsfIndex = 1; }
-    # Followed by continue; outside of if (c == 0xC8)
-    # And NO continue; inside if (c == 0xC8)
-    m = re.search(
-        r'if\s*\(\s*(?:state|m_state)\.crsfIndex\s*==\s*2\s*\)\s*\{[\s\S]*?'
-        r'if\s*\(\s*(?:state|m_state)\.crsfLength\s*>\s*Config::CRSF_MAX_PAYLOAD_LEN\s*\|\|\s*'
-        r'(?:state|m_state)\.crsfLength\s*<\s*2\s*\)\s*\{([\s\S]*?)\}',
+    idx2_match = re.search(
+        r'if\s*\(\s*(?:state|m_state)\.crsfIndex\s*==\s*2\s*\)\s*\{([\s\S]*?)(?:if\s*\(\s*(?:state|m_state)\.crsfIndex\s*==\s*3|$)',
         content
     )
-    if not m:
+    if not idx2_match:
         return False
-    block = m.group(1)
-    # Check that if (c == 0xC8) does NOT contain continue;
-    c8_match = re.search(r'if\s*\(\s*c\s*==\s*0xC8\s*\)\s*\{([\s\S]*?)\}', block)
+    block = idx2_match.group(1)
+    c8_match = re.search(r'if\s*\(\s*c\s*==\s*0xC8\s*\)\s*\{([^}]*)\}', block)
     if not c8_match:
         return False
     if 'continue;' in c8_match.group(1):
         return False
-    # Check that continue; is present in the outer error block
     return 'continue;' in block
 
 # Audit 2: UART buffer flush - drain HardwareSerial available bytes
