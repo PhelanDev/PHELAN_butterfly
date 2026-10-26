@@ -1097,7 +1097,8 @@ inline void publishTelemetry(const TelemetrySnapshot &s) {
 }
 
 inline TelemetrySnapshot readTelemetry() {
-  return g_telemBuf[g_telemIdx.load(std::memory_order_acquire)];
+  uint8_t cur = g_telemIdx.load(std::memory_order_acquire);
+  return g_telemBuf[cur];
 }
 
 void flightCoreTask(void *pvParameters) {
@@ -1106,7 +1107,6 @@ void flightCoreTask(void *pvParameters) {
   const TickType_t xFrequency = pdMS_TO_TICKS(3);
   unsigned long lastUs = micros();
   static Receiver::RcFrame rc;
-  static uint8_t pollFailCount = 0;
 
   for (;;) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -1118,10 +1118,9 @@ void flightCoreTask(void *pvParameters) {
       dt_us = Config::LOOP_DT_US;
     lastUs = nowUs;
 
+    static uint8_t pollFailCount = 0;
     if (!Receiver::pollChannels(millis(), rc)) {
-      if (pollFailCount < 255)
-        pollFailCount++;
-      if (pollFailCount >= 3) {
+      if (++pollFailCount >= 3) {
         rc.connected = false;
       }
     } else {

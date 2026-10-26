@@ -1216,7 +1216,7 @@ void setup() {
 
   xTaskCreatePinnedToCore(flightCoreTask, "FlightCore", 4096, NULL, 5, NULL, 0);
 
-  LOG_INFO("PHELAN BUTTERFLY 2IN1 READY");
+  LOG_INFO("PHELAN BUTTERFLY 2IN1 SINE READY");
 }
 
 void loop() {
