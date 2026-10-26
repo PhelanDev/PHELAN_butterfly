@@ -17,6 +17,7 @@ __attribute__((constructor)) static void disable_bod_early() {
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include "driver/uart.h"
 
 enum class Protocol { DETECT, CRSF, SBUS };
 
@@ -599,10 +600,10 @@ void resetParsers() {
   state.sbusIndex = 0;
   state.lastByteTimeCrsf = 0;
   state.lastByteTimeSbus = 0;
-  state.hasFrame = false;
-  state.validFramesCount = 0;
   if (rxMutex)
     xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
+  state.hasFrame = false;
+  state.validFramesCount = 0;
   state.crsfFailSafe = false;
   state.sbusFailSafe = false;
   state.sbusFrameLost = false;
@@ -757,19 +758,28 @@ bool readSbus() {
 void switchProtocol() {
   if (!state.serialPort)
     return;
-  state.trialProto =
-      (state.trialProto == Protocol::CRSF) ? Protocol::SBUS : Protocol::CRSF;
 
-  while (state.serialPort->available())
-    state.serialPort->read();
+  resetParsers();
 
-  state.serialPort->flush();
-  state.serialPort->onReceive(NULL);
-  state.serialPort->end();
-
-  state.switchDelayStart = millis();
-  if (state.switchDelayStart == 0)
-    state.switchDelayStart = 1;
+  if (state.trialProto == Protocol::CRSF) {
+    state.trialProto = Protocol::SBUS;
+    uart_set_baudrate(UART_NUM_1, Config::SBUS_BAUD);
+    uart_set_word_length(UART_NUM_1, UART_DATA_8_BITS);
+    uart_set_parity(UART_NUM_1, UART_PARITY_EVEN);
+    uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_2);
+    uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_RXD_INV);
+    uart_flush_input(UART_NUM_1);
+  } else {
+    state.trialProto = Protocol::CRSF;
+    uart_set_baudrate(UART_NUM_1, Config::CRSF_BAUD);
+    uart_set_word_length(UART_NUM_1, UART_DATA_8_BITS);
+    uart_set_parity(UART_NUM_1, UART_PARITY_DISABLE);
+    uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_1);
+    uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_INV_DISABLE);
+    uart_flush_input(UART_NUM_1);
+  }
+  state.lastProtoSwitchTime = millis();
+  LOG_INFO("Switched protocol: %s", state.trialProto == Protocol::CRSF ? "CRSF" : "SBUS");
 }
 
 void detectProtocol() {
@@ -794,28 +804,6 @@ void detectProtocol() {
     LOG_WARN("Protocol unlocked - no frames for 3s, re-detecting...");
   }
 
-  if (state.switchDelayStart != 0) {
-    if (millis() - state.switchDelayStart >= 5) {
-      state.switchDelayStart = 0;
-      resetParsers();
-      state.validFramesCount = 0;
-
-      state.serialPort->setRxBufferSize(Config::RX_BUFFER_SIZE);
-
-      if (state.trialProto == Protocol::CRSF) {
-        state.serialPort->begin(Config::CRSF_BAUD, SERIAL_8N1, Config::RX_PIN,
-                                -1, false);
-      } else {
-        state.serialPort->begin(Config::SBUS_BAUD, SERIAL_8E2, Config::RX_PIN,
-                                -1, true);
-      }
-      state.serialPort->onReceive(onUartData);
-      state.lastProtoSwitchTime = millis();
-      LOG_INFO("Switched protocol.");
-    }
-    return;
-  }
-
   if (!state.isLocked) {
     if (millis() - state.lastProtoSwitchTime >
         Config::PROTO_SWITCH_TIMEOUT_MS) {
@@ -825,14 +813,16 @@ void detectProtocol() {
 }
 
 void lockReceiver() {
+  if (rxMutex)
+    xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
   state.validFramesCount++;
   if (state.validFramesCount >= 3) {
-    if (rxMutex)
-      xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
     state.isLocked = true;
     state.currentProto = state.trialProto;
-    if (rxMutex)
-      xSemaphoreGiveRecursive(rxMutex);
+  }
+  if (rxMutex)
+    xSemaphoreGiveRecursive(rxMutex);
+  if (state.isLocked) {
     LOG_INFO("Locked protocol: %s",
              state.currentProto == Protocol::CRSF ? "CRSF" : "SBUS");
   }
@@ -841,9 +831,6 @@ void lockReceiver() {
 void handleAutoDetect() {
   if (Config::USE_AUTO_DETECT)
     detectProtocol();
-
-  if (state.switchDelayStart != 0)
-    return;
 
   bool frameReceived = false;
   if (state.trialProto == Protocol::CRSF)
@@ -1074,7 +1061,9 @@ void setupWatchdog() {
   wdt_cfg.idle_core_mask = 0;
   wdt_cfg.trigger_panic = true;
   esp_err_t err = esp_task_wdt_init(&wdt_cfg);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+  if (err == ESP_ERR_INVALID_STATE) {
+    esp_task_wdt_reconfigure(&wdt_cfg);
+  } else if (err != ESP_OK) {
     LOG_ERROR("WDT Init failed");
   }
 #else
@@ -1103,25 +1092,18 @@ struct TelemetrySnapshot {
   int16_t offsetDeg;
 };
 
-static std::atomic<uint32_t> g_telemSeq{0};
-static TelemetrySnapshot g_telem;
+static TelemetrySnapshot g_telemBuf[2];
+static std::atomic<uint8_t> g_telemIdx{0};
 
 inline void publishTelemetry(const TelemetrySnapshot &s) {
-  g_telemSeq.fetch_add(1, std::memory_order_relaxed);
-  std::atomic_thread_fence(std::memory_order_release);
-  g_telem = s;
-  g_telemSeq.fetch_add(1, std::memory_order_release);
+  uint8_t next = 1 - g_telemIdx.load(std::memory_order_relaxed);
+  g_telemBuf[next] = s;
+  g_telemIdx.store(next, std::memory_order_release);
 }
 
 inline TelemetrySnapshot readTelemetry() {
-  TelemetrySnapshot snap;
-  uint32_t s1;
-  do {
-    s1 = g_telemSeq.load(std::memory_order_acquire);
-    snap = g_telem;
-    std::atomic_thread_fence(std::memory_order_acquire);
-  } while ((s1 & 1) || s1 != g_telemSeq.load(std::memory_order_relaxed));
-  return snap;
+  uint8_t cur = g_telemIdx.load(std::memory_order_acquire);
+  return g_telemBuf[cur];
 }
 
 void flightCoreTask(void *pvParameters) {
@@ -1141,7 +1123,14 @@ void flightCoreTask(void *pvParameters) {
       dt_us = Config::LOOP_DT_US;
     lastUs = nowUs;
 
-    Receiver::pollChannels(millis(), rc);
+    static uint8_t pollFailCount = 0;
+    if (!Receiver::pollChannels(millis(), rc)) {
+      if (++pollFailCount >= 3) {
+        rc.connected = false;
+      }
+    } else {
+      pollFailCount = 0;
+    }
 
     bool killActive = rc.kill > Config::KILL_SWITCH_THRESHOLD;
 
