@@ -38,6 +38,8 @@ constexpr int SERVO_US_MIN = 500;
 constexpr int SERVO_US_MAX = 2500;
 constexpr int SERVO_US_CENTER = 1500;
 constexpr int SERVO_US_DEADBAND = 3;
+constexpr int SERVO_US_LIM_MIN = SERVO_US_MIN + (SERVO_MIN_ANGLE * (SERVO_US_MAX - SERVO_US_MIN) + 90) / 180;
+constexpr int SERVO_US_LIM_MAX = SERVO_US_MIN + (SERVO_MAX_ANGLE * (SERVO_US_MAX - SERVO_US_MIN) + 90) / 180;
 
 constexpr uint32_t CRSF_BAUD = 420000;
 constexpr uint32_t SBUS_BAUD = 100000;
@@ -245,10 +247,8 @@ void update(float targetL, float targetR, bool bypassFilter = false) {
   int usL = state.filteredL >> Config::SERVO_EMA_ALPHA_SHIFT;
   int usR = state.filteredR >> Config::SERVO_EMA_ALPHA_SHIFT;
 
-  const int usMin = Config::angleToUs((float)Config::SERVO_MIN_ANGLE);
-  const int usMax = Config::angleToUs((float)Config::SERVO_MAX_ANGLE);
-  usL = constrain(usL, usMin, usMax);
-  usR = constrain(usR, usMin, usMax);
+  usL = constrain(usL, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
+  usR = constrain(usR, Config::SERVO_US_LIM_MIN, Config::SERVO_US_LIM_MAX);
 
   if (abs(usL - state.lastUsL) >= Config::SERVO_US_DEADBAND) {
     state.left.writeMicroseconds(usL);
@@ -489,7 +489,6 @@ struct State {
   unsigned long lastTime = 0;
   unsigned long lastByteTimeCrsf = 0;
   unsigned long lastByteTimeSbus = 0;
-  unsigned long switchDelayStart = 0;
   HardwareSerial *serialPort = nullptr;
 };
 
@@ -710,12 +709,14 @@ bool readCrsf() {
         if (c == 0xC8) {
           state.crsfBuffer[0] = 0xC8;
           state.crsfIndex = 1;
+          continue;
         }
       }
     }
     if (state.crsfIndex == 3) {
       uint8_t type = c;
-      if (!((type == 0x16 && state.crsfLength == 24) || type == 0x14)) {
+      if (!((type == 0x16 && state.crsfLength == 24) ||
+            (type == 0x14 && state.crsfLength == 12))) {
         state.crsfIndex = 0;
         if (c == 0xC8) {
           state.crsfBuffer[0] = c;
@@ -948,8 +949,11 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.disarmStartTime = 0;
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
+      Flight::state.currentOffset = 0.0f;
       ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
       ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
+      ServoSystem::state.filteredL = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
+      ServoSystem::state.filteredR = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
       ServoSystem::attachAll();
     }
   } else {
@@ -973,6 +977,7 @@ void handleDisarming(unsigned long currentMillis, int throttle, int yaw) {
     else if (currentMillis - Flight::state.disarmStartTime >=
              Config::STICK_HOLD_MS) {
       Flight::state.isArmed = false;
+      Flight::state.currentOffset = 0.0f;
       ServoSystem::detachAll();
       Flight::state.mode = FlightMode::INIT;
       Flight::state.armStartTime = 0;
@@ -1179,6 +1184,7 @@ void flightCoreTask(void *pvParameters) {
       Flight::state.wasFlapping = false;
       Flight::state.wasPerching = false;
       Flight::state.phaseNeedsResync = true;
+      Flight::state.currentOffset = 0.0f;
       Flight::state.mode = FlightMode::INIT;
       Flight::state.failsafeEnterMs = 0;
       ServoSystem::detachAll();
