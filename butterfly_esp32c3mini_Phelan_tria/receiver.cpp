@@ -138,10 +138,11 @@ void syncFilterCache() {
   }
 }
 
-bool pollChannels(unsigned long nowMs, RcFrame &out) {
+bool pollChannels(RcFrame &out) {
   if (!rxMutex || !xSemaphoreTakeRecursive(rxMutex, pdMS_TO_TICKS(1))) {
     return false;
   }
+  unsigned long nowMs = millis();
 
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
@@ -205,8 +206,8 @@ bool readCrsf() {
         if (c == 0xC8) {
           state.crsfBuffer[0] = 0xC8;
           state.crsfIndex = 1;
-          continue;
         }
+        continue;
       }
     }
     if (state.crsfIndex == 3) {
@@ -294,6 +295,11 @@ void switchProtocol() {
     uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_RXD_INV);
   }
   uart_flush_input(UART_NUM_1);
+  if (state.serialPort) {
+    while (state.serialPort->available()) {
+      state.serialPort->read();
+    }
+  }
 
   resetParsers();
   state.lastProtoSwitchTime = millis();

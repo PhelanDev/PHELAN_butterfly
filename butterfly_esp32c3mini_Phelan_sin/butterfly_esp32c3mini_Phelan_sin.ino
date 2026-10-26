@@ -52,6 +52,8 @@ void handleInitMode(unsigned long dt_us, bool connected,
       Flight::state.isPerching = false;
       Flight::state.perchAngleLevel = Config::CH_MIN;
       Flight::state.currentOffset = 0.0f;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
       ServoSystem::state.lastUsL = Config::SERVO_US_CENTER;
       ServoSystem::state.lastUsR = Config::SERVO_US_CENTER;
       ServoSystem::state.filteredL = (int32_t)Config::SERVO_US_CENTER << Config::SERVO_EMA_ALPHA_SHIFT;
@@ -80,6 +82,11 @@ void handleDisarming(unsigned long currentMillis, int throttle, int yaw) {
              Config::STICK_HOLD_MS) {
       Flight::state.isArmed = false;
       Flight::state.currentOffset = 0.0f;
+      Flight::state.isPerching = false;
+      Flight::state.isFlapping = false;
+      Flight::state.wasFlapping = false;
+      Flight::state.wasPerching = false;
+      Flight::state.phaseNeedsResync = true;
       ServoSystem::detachAll();
       Flight::state.mode = FlightMode::INIT;
       Flight::state.armStartTime = 0;
@@ -259,7 +266,7 @@ void flightCoreTask(void *pvParameters) {
     lastUs = nowUs;
 
     static uint8_t pollFailCount = 0;
-    if (!Receiver::pollChannels(millis(), rc)) {
+    if (!Receiver::pollChannels(rc)) {
       if (++pollFailCount >= 3) {
         rc.connected = false;
       }
