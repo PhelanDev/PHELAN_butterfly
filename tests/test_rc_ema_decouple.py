@@ -50,7 +50,8 @@ def audit_variant(rx_content):
     crsf_body = extract_block(rx_content, r'void\s+parseCrsfChannels\s*\([^)]*\)')
     has_crsf_call = (
         'updateEmaFilter()' in crsf_body and
-        'syncFilterCache()' in crsf_body
+        'syncFilterCache()' in crsf_body and
+        'state.hasFrame = true' in crsf_body
     )
 
     # Audit D: parseSbusChannels calls updateEmaFilter when not frame lost
@@ -58,14 +59,19 @@ def audit_variant(rx_content):
     has_sbus_call = (
         'updateEmaFilter()' in sbus_body and
         '!state.sbusFrameLost' in sbus_body and
-        'syncFilterCache()' in sbus_body
+        'syncFilterCache()' in sbus_body and
+        'state.hasFrame = true' in sbus_body
     )
+
+    # Audit E: updateEmaFilter forward declared or declared in header
+    has_prototype = 'void updateEmaFilter();' in rx_content
 
     return {
         'A_poll_no_ema': has_no_ema_in_poll,
         'B_update_ema': has_update_ema,
         'C_crsf_call': has_crsf_call,
         'D_sbus_call': has_sbus_call,
+        'E_prototype': has_prototype,
     }
 
 def run_all():
@@ -84,7 +90,15 @@ def run_all():
 
     for vname, rel_path in variants:
         content = read_file(rel_path)
-        res = audit_variant(content)
+        # For modular variants, check header for prototype
+        if 'modular' in vname or 'multi' in vname:
+            hdr_path = rel_path.replace('.cpp', '.h')
+            header_content = read_file(hdr_path)
+            eval_content = content + "\n" + header_content
+        else:
+            eval_content = content
+
+        res = audit_variant(eval_content)
 
         tA = f"{vname}: Audit A - Zero EMA in pollChannels"
         if res['A_poll_no_ema']:
@@ -104,7 +118,7 @@ def run_all():
             failed += 1
             failures.append(tB)
 
-        tC = f"{vname}: Audit C - parseCrsfChannels calls updateEmaFilter"
+        tC = f"{vname}: Audit C - parseCrsfChannels calls updateEmaFilter & latches hasFrame"
         if res['C_crsf_call']:
             print(f"  [PASS] {tC}")
             passed += 1
@@ -113,7 +127,7 @@ def run_all():
             failed += 1
             failures.append(tC)
 
-        tD = f"{vname}: Audit D - parseSbusChannels guarded updateEmaFilter"
+        tD = f"{vname}: Audit D - parseSbusChannels guarded updateEmaFilter & latches hasFrame"
         if res['D_sbus_call']:
             print(f"  [PASS] {tD}")
             passed += 1
@@ -121,6 +135,15 @@ def run_all():
             print(f"  [FAIL] {tD}")
             failed += 1
             failures.append(tD)
+
+        tE = f"{vname}: Audit E - updateEmaFilter forward declaration exists"
+        if res['E_prototype']:
+            print(f"  [PASS] {tE}")
+            passed += 1
+        else:
+            print(f"  [FAIL] {tE}")
+            failed += 1
+            failures.append(tE)
 
     print("\n-------------------------------------------")
     print(f"Results: {passed} passed, {failed} failed")
@@ -135,3 +158,4 @@ def run_all():
 
 if __name__ == '__main__':
     sys.exit(run_all())
+

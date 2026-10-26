@@ -558,6 +558,7 @@ uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
 }
 
 void syncFilterCache();
+void updateEmaFilter();
 
 void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
   if (!payload || payload_len < 22)
@@ -578,10 +579,12 @@ void parseCrsfChannels(uint8_t *payload, uint8_t payload_len) {
     state.chMicros_cache[i] = (int16_t)constrain(
         mappedRaw, Config::RX_MIN_MICROS, Config::RX_MAX_MICROS);
   }
-  if (firstFrame)
+  if (firstFrame) {
     syncFilterCache();
-  else
+    state.hasFrame = true;
+  } else {
     updateEmaFilter();
+  }
   if (rxMutex)
     xSemaphoreGiveRecursive(rxMutex);
 }
@@ -607,10 +610,12 @@ void parseSbusChannels() {
   } else {
     state.sbusLostFrames = 0;
   }
-  if (firstFrame)
+  if (firstFrame) {
     syncFilterCache();
-  else if (!state.sbusFrameLost)
+    state.hasFrame = true;
+  } else if (!state.sbusFrameLost) {
     updateEmaFilter();
+  }
   if (rxMutex)
     xSemaphoreGiveRecursive(rxMutex);
 }
