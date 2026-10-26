@@ -31,6 +31,10 @@ struct State {
 
 extern State state;
 
+inline bool isRisingPhase(uint16_t phase) {
+  return (uint16_t)(phase + 16384) < 32768;
+}
+
 uint16_t triPhaseFromOffset(float offset, float amp, bool flapUp);
 void slewOffsetTo(float target, unsigned long dt_us);
 void updateCurrentOffsetTriangle(int throttle, unsigned long dt_us);

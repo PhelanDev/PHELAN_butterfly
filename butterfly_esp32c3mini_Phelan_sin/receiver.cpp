@@ -1,4 +1,5 @@
 #include "receiver.h"
+#include "driver/uart.h"
 
 namespace Receiver {
 
@@ -44,7 +45,9 @@ uint8_t crsf_crc8(uint8_t *ptr, uint8_t len) {
   return crc;
 }
 
-bool isValidSbusFooter(uint8_t footer) { return footer == 0x00; }
+bool isValidSbusFooter(uint8_t footer) {
+  return (footer == 0x00) || ((footer & 0x0F) == 0x04);
+}
 
 uint16_t extract11BitChannel(const uint8_t *payload, uint8_t chIndex,
                              uint8_t payloadLen) {
@@ -119,9 +122,9 @@ void resetParsers() {
   state.sbusIndex = 0;
   state.lastByteTimeCrsf = 0;
   state.lastByteTimeSbus = 0;
+  if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
   state.hasFrame = false;
   state.validFramesCount = 0;
-  if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
   state.crsfFailSafe = false;
   state.sbusFailSafe = false;
   state.sbusFrameLost = false;
@@ -143,10 +146,11 @@ bool pollChannels(unsigned long nowMs, RcFrame &out) {
   for (uint8_t ch = 0; ch < 16; ch++) {
     int16_t diff = state.chMicros_cache[ch] - state.emaValues[ch];
     if (diff != 0) {
-      state.emaValues[ch] += (diff >> Config::EMA_ALPHA_SHIFT);
-      if ((diff >> Config::EMA_ALPHA_SHIFT) == 0) {
-        state.emaValues[ch] += (diff > 0) ? 1 : -1;
+      int16_t step = diff / (1 << Config::EMA_ALPHA_SHIFT);
+      if (step == 0) {
+        step = (diff > 0) ? 1 : -1;
       }
+      state.emaValues[ch] += step;
     }
   }
 
@@ -166,7 +170,7 @@ bool pollChannels(unsigned long nowMs, RcFrame &out) {
   out.ch[1] = state.emaValues[Config::CH_ELEVATOR];
   out.ch[2] = state.emaValues[Config::CH_THROTTLE];
   out.ch[3] = state.emaValues[Config::CH_YAW];
-  out.kill = state.emaValues[Config::CH_KILL_SWITCH];
+  out.kill = state.chMicros_cache[Config::CH_KILL_SWITCH];
   out.proto = state.currentProto;
 
   xSemaphoreGiveRecursive(rxMutex);
@@ -196,8 +200,13 @@ bool readCrsf() {
     if (state.crsfIndex == 2) {
       state.crsfLength = c;
       if (state.crsfLength > Config::CRSF_MAX_PAYLOAD_LEN ||
-          state.crsfLength < 2)
+          state.crsfLength < 2) {
         state.crsfIndex = 0;
+        if (c == 0xC8) {
+          state.crsfBuffer[0] = 0xC8;
+          state.crsfIndex = 1;
+        }
+      }
     }
     if (state.crsfIndex == 3) {
       uint8_t type = c;
@@ -269,16 +278,23 @@ void switchProtocol() {
   state.trialProto =
       (state.trialProto == Protocol::CRSF) ? Protocol::SBUS : Protocol::CRSF;
 
-  while (state.serialPort->available())
-    state.serialPort->read();
+  if (state.trialProto == Protocol::CRSF) {
+    uart_set_baudrate(UART_NUM_1, Config::CRSF_BAUD);
+    uart_set_word_length(UART_NUM_1, UART_DATA_8_BITS);
+    uart_set_parity(UART_NUM_1, UART_PARITY_DISABLE);
+    uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_1);
+    uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_INV_DISABLE);
+  } else {
+    uart_set_baudrate(UART_NUM_1, Config::SBUS_BAUD);
+    uart_set_word_length(UART_NUM_1, UART_DATA_8_BITS);
+    uart_set_parity(UART_NUM_1, UART_PARITY_EVEN);
+    uart_set_stop_bits(UART_NUM_1, UART_STOP_BITS_2);
+    uart_set_line_inverse(UART_NUM_1, UART_SIGNAL_RXD_INV);
+  }
+  uart_flush_input(UART_NUM_1);
 
-  state.serialPort->flush();
-  state.serialPort->onReceive(NULL);
-  state.serialPort->end();
-
-  state.switchDelayStart = millis();
-  if (state.switchDelayStart == 0)
-    state.switchDelayStart = 1;
+  resetParsers();
+  state.lastProtoSwitchTime = millis();
 }
 
 void detectProtocol() {
@@ -300,28 +316,6 @@ void detectProtocol() {
     LOG_WARN("Protocol unlocked - no frames for 3s, re-detecting...");
   }
 
-  if (state.switchDelayStart != 0) {
-    if (millis() - state.switchDelayStart >= 5) {
-      state.switchDelayStart = 0;
-      resetParsers();
-      state.validFramesCount = 0;
-
-      state.serialPort->setRxBufferSize(Config::RX_BUFFER_SIZE);
-
-      if (state.trialProto == Protocol::CRSF) {
-        state.serialPort->begin(Config::CRSF_BAUD, SERIAL_8N1, Config::RX_PIN,
-                                -1, false);
-      } else {
-        state.serialPort->begin(Config::SBUS_BAUD, SERIAL_8E2, Config::RX_PIN,
-                                -1, true);
-      }
-      state.serialPort->onReceive(onUartData);
-      state.lastProtoSwitchTime = millis();
-      LOG_INFO("Switched protocol.");
-    }
-    return;
-  }
-
   if (!state.isLocked) {
     if (millis() - state.lastProtoSwitchTime >
         Config::PROTO_SWITCH_TIMEOUT_MS) {
@@ -331,23 +325,20 @@ void detectProtocol() {
 }
 
 void lockReceiver() {
+  if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
   state.validFramesCount++;
   if (state.validFramesCount >= 3) {
-    if (rxMutex) xSemaphoreTakeRecursive(rxMutex, portMAX_DELAY);
     state.isLocked = true;
     state.currentProto = state.trialProto;
-    if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
     LOG_INFO("Locked protocol: %s",
              state.currentProto == Protocol::CRSF ? "CRSF" : "SBUS");
   }
+  if (rxMutex) xSemaphoreGiveRecursive(rxMutex);
 }
 
 void handleAutoDetect() {
   if (Config::USE_AUTO_DETECT)
     detectProtocol();
-
-  if (state.switchDelayStart != 0)
-    return;
 
   bool frameReceived = false;
   if (state.trialProto == Protocol::CRSF)

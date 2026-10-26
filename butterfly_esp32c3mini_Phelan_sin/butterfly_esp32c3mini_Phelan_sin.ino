@@ -124,9 +124,13 @@ void computeServoTargets(unsigned long dt_us, int steering, int elevator,
                          : 0.0f;
 
   if (Flight::state.mode == FlightMode::PERCHING) {
-    int currentPull =
-        constrain(Config::CH_MIN + (Config::CH_CENTER - elevator) * 2,
-                  Config::CH_MIN, Config::CH_MAX);
+    int currentPull = Config::CH_MIN;
+    if (elevator <= Config::PERCH_ENTER_ELEV) {
+      currentPull = Config::CH_MIN + (int32_t)(Config::PERCH_ENTER_ELEV - elevator) *
+                    (Config::CH_MAX - Config::CH_MIN) /
+                    (Config::PERCH_ENTER_ELEV - Config::CH_MIN);
+      currentPull = constrain(currentPull, Config::CH_MIN, Config::CH_MAX);
+    }
     Flight::state.perchAngleLevel = currentPull;
     Flight::updateCurrentOffsetPerch(Flight::state.perchAngleLevel, dt_us);
   } else {
@@ -188,7 +192,9 @@ void setupWatchdog() {
   wdt_cfg.idle_core_mask = 0;
   wdt_cfg.trigger_panic = true;
   esp_err_t err = esp_task_wdt_init(&wdt_cfg);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+  if (err == ESP_ERR_INVALID_STATE) {
+    esp_task_wdt_reconfigure(&wdt_cfg);
+  } else if (err != ESP_OK) {
     LOG_ERROR("WDT Init failed");
   }
 #else
@@ -217,25 +223,18 @@ struct TelemetrySnapshot {
   int16_t offsetDeg;
 };
 
-static std::atomic<uint32_t> g_telemSeq{0};
-static TelemetrySnapshot g_telem;
+static TelemetrySnapshot g_telemBuf[2];
+static std::atomic<uint8_t> g_telemIdx{0};
 
 inline void publishTelemetry(const TelemetrySnapshot &s) {
-  g_telemSeq.fetch_add(1, std::memory_order_relaxed);
-  std::atomic_thread_fence(std::memory_order_release);
-  g_telem = s;
-  g_telemSeq.fetch_add(1, std::memory_order_release);
+  uint8_t next = 1 - g_telemIdx.load(std::memory_order_relaxed);
+  g_telemBuf[next] = s;
+  g_telemIdx.store(next, std::memory_order_release);
 }
 
 inline TelemetrySnapshot readTelemetry() {
-  TelemetrySnapshot snap;
-  uint32_t s1;
-  do {
-    s1 = g_telemSeq.load(std::memory_order_acquire);
-    snap = g_telem;
-    std::atomic_thread_fence(std::memory_order_acquire);
-  } while ((s1 & 1) || s1 != g_telemSeq.load(std::memory_order_relaxed));
-  return snap;
+  uint8_t cur = g_telemIdx.load(std::memory_order_acquire);
+  return g_telemBuf[cur];
 }
 
 void flightCoreTask(void *pvParameters) {
@@ -255,7 +254,14 @@ void flightCoreTask(void *pvParameters) {
       dt_us = Config::LOOP_DT_US;
     lastUs = nowUs;
 
-    Receiver::pollChannels(millis(), rc);
+    static uint8_t pollFailCount = 0;
+    if (!Receiver::pollChannels(millis(), rc)) {
+      if (++pollFailCount >= 3) {
+        rc.connected = false;
+      }
+    } else {
+      pollFailCount = 0;
+    }
 
     bool killActive = rc.kill > Config::KILL_SWITCH_THRESHOLD;
 

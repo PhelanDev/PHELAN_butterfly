@@ -141,6 +141,9 @@ void updateCurrentOffsetPerch(int perchAngleLevel, unsigned long dt_us) {
 
 void updateCurrentOffsetGlide(unsigned long dt_us) {
   slewOffsetTo(0.0f, dt_us);
+  if (fabsf(state.currentOffset) < 0.01f) {
+    state.isFlapUp = true;
+  }
 }
 
 void processFailsafe(unsigned long dt_us) {
