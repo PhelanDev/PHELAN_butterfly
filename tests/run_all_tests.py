@@ -148,8 +148,11 @@ def run_group2_audits():
         has_l7 = ("(footer & 0x0F) == 0x04" in is_sbus_footer or "footer & 0x0F" in is_sbus_footer)
         audit(f"{v}: Bug 7 - isValidSbusFooter supports SBUS2 (0x04)", has_l7)
 
-        # Bug 8: pollChannels filters EMA with symmetric integer division diff / (1 << Config::EMA_ALPHA_SHIFT)
-        has_l8 = ("diff / (1 << Config::EMA_ALPHA_SHIFT)" in poll_channels or
+        # Bug 8: EMA filtered with symmetric integer division diff / (1 << Config::EMA_ALPHA_SHIFT)
+        update_ema = extract_block(src, r'void\s+updateEmaFilter\s*\([^)]*\)')
+        has_l8 = ("diff / (1 << Config::EMA_ALPHA_SHIFT)" in update_ema or
+                  "diff / (1 <<" in update_ema or
+                  "diff / (1 << Config::EMA_ALPHA_SHIFT)" in poll_channels or
                   "diff / (1 <<" in poll_channels or
                   "diff / 8" in poll_channels)
         audit(f"{v}: Bug 8 - Symmetric integer division EMA for RC channels", has_l8)
